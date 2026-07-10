@@ -1,0 +1,44 @@
+# Velum Documentation
+
+This directory is the design source of truth while Velum is in discovery.
+Statements are divided into verified facts, hypotheses, decisions, and open
+questions. Proposed ADRs are not final protocol commitments.
+
+## Product and Evidence
+
+- [Vision and positioning](vision.md): target users, problem statement,
+  differentiators, goals, and non-goals.
+- [Protocol landscape](landscape.md): MASQUE, AnyTLS, VLESS, Hysteria 2, and
+  WireGuard comparison.
+- [Evidence ledger](evidence-ledger.md): facts, assumptions, unknowns, and
+  invalidation signals.
+- [Stage 0 validation](../experiments/stage0/README.md): versioned network and
+  workload manifests, interview records, baseline pins, and raw evidence rules.
+
+## Protocol Design
+
+- [Architecture](architecture.md): system boundaries, protocol layers, runtime
+  behavior, failure handling, and ownership.
+- [Forest Native](forest-native.md): camouflage philosophy, threat model, and
+  deployment requirements.
+- [Protocol requirements](protocol-requirements.md): delivery semantics,
+  invariants, quality scenarios, and fitness functions.
+- [Architecture contract](architecture-contract.yaml): initial machine-readable
+  module and dependency boundaries.
+
+## Delivery and Decisions
+
+- [Roadmap](roadmap.md): evidence-driven delivery stages and exit gates.
+- [ADR-0001: Product position](adr/0001-product-position.md)
+- [ADR-0002: Multi-carrier sessions](adr/0002-multi-carrier-sessions.md)
+- [ADR-0003: Forest Native](adr/0003-forest-native.md)
+
+## Document Status
+
+| Artifact | Status | Becomes stable when |
+|---|---|---|
+| Vision | Working baseline | Target-user interviews validate the problem |
+| Architecture | Proposed | Tracer prototype validates session migration |
+| Wire protocol | Not defined | State machine and carrier experiments converge |
+| Security model | Proposed | Independent review closes critical findings |
+| Roadmap | Active | Updated at every stage gate |

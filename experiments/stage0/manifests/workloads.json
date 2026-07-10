@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "manifest_version": "0.1.0",
+  "workloads": [
+    {
+      "id": "interactive-tcp",
+      "delivery_semantics": "reliable_stream",
+      "description": "Long-lived request/response stream with human-interaction pacing.",
+      "duration_seconds": 120,
+      "concurrency": 1,
+      "generator": { "kind": "request_response", "request_bytes": 256, "response_bytes": 1024, "interval_ms": 250 },
+      "measurements": ["request_latency_ms", "disconnect_count", "missing_bytes", "duplicate_bytes"]
+    },
+    {
+      "id": "bulk-tcp",
+      "delivery_semantics": "reliable_stream",
+      "description": "Sustained single-flow transfer in each direction.",
+      "duration_seconds": 120,
+      "concurrency": 1,
+      "generator": { "kind": "bulk_transfer", "directions": ["upload", "download"], "chunk_bytes": 65536 },
+      "measurements": ["throughput_mbit_s", "completion_time_ms", "missing_bytes", "duplicate_bytes"]
+    },
+    {
+      "id": "realtime-udp",
+      "delivery_semantics": "unreliable_datagram",
+      "description": "Fixed-cadence bidirectional datagrams resembling real-time state updates.",
+      "duration_seconds": 120,
+      "concurrency": 1,
+      "generator": { "kind": "paced_datagram", "payload_bytes": 192, "packets_per_second": 50, "bidirectional": true },
+      "measurements": ["one_way_latency_ms", "loss_ratio", "duplicate_ratio", "reorder_ratio"]
+    },
+    {
+      "id": "dns-like-udp",
+      "delivery_semantics": "unreliable_datagram",
+      "description": "Sparse request/response datagrams with bounded retries owned by the workload.",
+      "duration_seconds": 120,
+      "concurrency": 16,
+      "generator": { "kind": "datagram_query", "request_bytes": 64, "response_bytes": 512, "timeout_ms": 1000, "max_attempts": 2 },
+      "measurements": ["response_latency_ms", "timeout_ratio", "attempt_count"]
+    },
+    {
+      "id": "idle-mobile",
+      "delivery_semantics": "idle_session",
+      "description": "Authenticated idle period used to expose keepalive and wakeup cost.",
+      "duration_seconds": 1800,
+      "concurrency": 1,
+      "generator": { "kind": "idle" },
+      "measurements": ["bytes_sent", "bytes_received", "socket_count", "memory_bytes", "radio_wakeups"]
+    }
+  ],
+  "matrix": [
+    { "network": "stable-reference", "workloads": ["interactive-tcp", "bulk-tcp", "realtime-udp", "dns-like-udp", "idle-mobile"] },
+    { "network": "udp-black-hole", "workloads": ["interactive-tcp", "realtime-udp", "dns-like-udp"] },
+    { "network": "udp-rate-limit", "workloads": ["interactive-tcp", "bulk-tcp", "realtime-udp"] },
+    { "network": "burst-loss", "workloads": ["interactive-tcp", "bulk-tcp", "realtime-udp", "dns-like-udp"] },
+    { "network": "nat-rebinding", "workloads": ["interactive-tcp", "realtime-udp"] },
+    { "network": "path-mtu-1280", "workloads": ["bulk-tcp", "realtime-udp", "dns-like-udp"] },
+    { "network": "tcp-only-network", "workloads": ["interactive-tcp", "bulk-tcp", "realtime-udp", "dns-like-udp"] }
+  ]
+}

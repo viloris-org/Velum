@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "manifest_version": "0.3.0",
+  "baselines": [
+    {
+      "id": "masque",
+      "role": "standards-based HTTP tunnel",
+      "implementation": "google-quiche MASQUE tools",
+      "source_url": "https://github.com/google/quiche",
+      "version": null,
+      "revision": "596064cbab9d6e62981b2cce781a6635faad884c",
+      "status": "candidate_pinned",
+      "checked_at": "2026-07-11",
+      "selection_note": "The pinned tree contains MASQUE client/server binaries plus separate TCP client/server tools. Build and workload compatibility remain to be verified."
+    },
+    {
+      "id": "anytls",
+      "role": "TLS/TCP proxy baseline",
+      "implementation": "anytls-go",
+      "source_url": "https://github.com/anytls/anytls-go",
+      "version": "v0.0.13",
+      "revision": "9666872946857b50a74fdb692896d77b53773cb2",
+      "status": "candidate_pinned",
+      "checked_at": "2026-07-11"
+    },
+    {
+      "id": "hysteria2",
+      "role": "QUIC stream and datagram baseline",
+      "implementation": "hysteria",
+      "source_url": "https://github.com/apernet/hysteria",
+      "version": "app/v2.9.3",
+      "revision": "2d973f9513ef661d1922d6d14acb37945caef47d",
+      "status": "candidate_pinned",
+      "checked_at": "2026-07-11"
+    },
+    {
+      "id": "conventional",
+      "role": "conventional VPN or proxy control",
+      "implementation": "wireguard-tools",
+      "source_url": "https://git.zx2c4.com/wireguard-tools",
+      "version": "v1.0.20260223",
+      "revision": "14017be296394e087b66662649c6374629a91580",
+      "status": "candidate_pinned",
+      "checked_at": "2026-07-11",
+      "selection_note": "Initial control hypothesis from the protocol landscape. Confirm operational relevance in operator interviews and record kernel WireGuard versions on both hosts."
+    }
+  ],
+  "reference_environment": {
+    "client_os": "Fedora Linux 44",
+    "client_kernel": "Linux 7.1.3-200.fc44.x86_64 x86_64",
+    "server_os": null,
+    "server_kernel": null,
+    "impairment_tool": "tc/netem",
+    "impairment_tool_version": "iproute2-6.17.0, libbpf 1.6.3",
+    "workload_tool": "velum-stage0-harness",
+    "workload_tool_version": "0.1.0"
+  }
+}
