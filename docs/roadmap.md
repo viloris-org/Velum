@@ -37,7 +37,7 @@ When evidence becomes stale or a regression is found, move the item back to
 |---|---|---|---|---|
 | Foundation | Reproducible repository and engineering controls | `IN PROGRESS` | Pinned workspace, executable architecture/docs/test gates, Stage 0 harness, CI and governance artifacts | Default-branch CI evidence, policy review, CI health baseline |
 | 0 | Validate the problem and competitor baselines | `IN PROGRESS` | Manifests and retained-result integrity checks pass; local harness tests pass | Five interviews, reference server pinning, executable baselines, raw runs |
-| 1 | Prove the carrier-independent session state model | `IN PROGRESS` | Deterministic reliable-stream tracer and focused checks | Exhaustive faults and seeded transition campaigns |
+| 1 | Prove the carrier-independent session state model | `IN PROGRESS` | Deterministic tracer, exhaustive receive traces, and a 10,000-seed transition campaign retained by CI | ADR-0002 maintainer review |
 | 2 | Deliver a QUIC end-to-end slice | `NOT STARTED` | None | Real client-to-server stream and datagram flow |
 | 3 | Preserve streams across QUIC/TLS transitions | `NOT STARTED` | None | 10,000 correct fault trials and transition budgets |
 | 4 | Add Forest Native service coexistence | `NOT STARTED` | Threat-model proposal only | Differential probes and independent deployments |
@@ -133,13 +133,13 @@ wire protocol.
 | S1-01 | `protocol`, `session`, `carrier-api`, `policy`, and `telemetry` crates | `DONE` | [`crates/`](../crates); `cargo check --workspace` and `cargo xtask architecture` pass |
 | S1-02 | Deterministic state-machine model before final frame bytes | `DONE` | [`session-tracer.md`](session-tracer.md); `cargo xtask model-check` passes |
 | S1-03 | In-memory carrier simulator for loss, duplication, reordering, delay, black holes, and recovery | `DONE` | [`simulator.rs`](../crates/velum-session/src/simulator.rs); deterministic scenarios cover every listed fault and recovery |
-| S1-04 | Flow identity, epochs, logical acknowledgements, replay windows, and transition state | `TODO` | Unit and model tests enforce ownership invariants |
-| S1-05 | Bounded memory, queues, replay windows, and timeouts | `PARTIAL` | Pending-segment and byte limits reject excess data; replay windows and timeouts remain open |
-| S1-06 | Duplicate-free, gap-free reliable-stream behavior | `PARTIAL` | Deterministic checks exhaustively cover short duplicate and gap traces plus recovery after simulated carrier faults; broader transition state remains open |
-| S1-07 | 10,000 seeded randomized transitions with byte-exact checksums | `TODO` | Seeds and results retained in CI artifacts |
-| S1-08 | Parser fuzz targets and corpus retention | `TODO` | Every parser introduced in this stage is fuzzed |
-| S1-09 | `cargo xtask architecture` and `cargo xtask model-check` | `PARTIAL` | Commands exist and pass locally; CI integration follows the full fault model |
-| S1-10 | ADR-0002 accepted, rejected, or superseded | `TODO` | Review uses tracer evidence |
+| S1-04 | Flow identity, epochs, logical acknowledgements, replay windows, and transition state | `DONE` | [`velum-session`](../crates/velum-session/src/lib.rs) carries `FlowId` and `Epoch` on segments and acknowledgements; [`transition.rs`](../crates/velum-session/src/transition.rs) enforces the bounded current/retiring epoch window; `cargo xtask model-check` passes |
+| S1-05 | Bounded memory, queues, replay windows, and timeouts | `DONE` | Pending segment, byte, and age limits are enforced by [`velum-session`](../crates/velum-session/src/lib.rs); the bounded epoch window and receive cursor reject stale/replayed delivery; `cargo xtask model-check` passes |
+| S1-06 | Duplicate-free, gap-free reliable-stream behavior | `DONE` | Exhaustive short receive traces, deterministic fault recovery, and [`campaign.rs`](../crates/velum-session/src/campaign.rs) enforce byte-exact, duplicate-free recovery; `cargo xtask model-check` passes |
+| S1-07 | 10,000 seeded randomized transitions with byte-exact checksums | `DONE` | Seeds `0..9999` and aggregate checksum `11202198267056387872` are verified by [`campaign.rs`](../crates/velum-session/src/campaign.rs); required CI retains the model-check result |
+| S1-08 | Parser fuzz targets and corpus retention | `DONE` | No Stage 1 frame parser exists by design; the deterministic tracer accepts typed in-memory segments only. Any introduced parser must add a fuzz target and retained corpus before this item may remain complete |
+| S1-09 | `cargo xtask architecture` and `cargo xtask model-check` | `DONE` | [`ci.yml`](../.github/workflows/ci.yml) executes `cargo xtask test` and a separately retained `cargo xtask model-check` result |
+| S1-10 | ADR-0002 accepted, rejected, or superseded | `PARTIAL` | [`ADR-0002`](adr/0002-multi-carrier-sessions.md) contains tracer review evidence; named protocol-maintainer decision remains required |
 
 ### Exit Gate
 

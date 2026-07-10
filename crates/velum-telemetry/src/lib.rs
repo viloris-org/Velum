@@ -3,6 +3,7 @@
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SessionEvent {
     FlowOpened,
+    FlowTimedOut,
     PendingLimitReached,
     DuplicateIgnored,
     OutOfOrderRejected,

@@ -65,6 +65,26 @@ Negative:
 - Architecture dependency gate against
   [`architecture-contract.yaml`](../architecture-contract.yaml).
 
+## Review Evidence
+
+The experimental tracer now assigns every segment and logical acknowledgement
+to a `FlowId` and bounded current/retiring `Epoch` window. It rejects stale or
+future epochs before changing a delivery cursor, terminates flows rather than
+silently dropping timed-out reliable data, and keeps pending segment, byte, and
+age state bounded.
+
+`cargo xtask model-check` runs exhaustive short receive traces plus 10,000
+seeded transition trials. The seeded campaign covers loss, duplication, delay,
+black holes, recovery retransmission, and an epoch transition; each trial
+checks byte-exact application output. The campaign's retained aggregate is
+`11202198267056387872` for seeds `0..9999`.
+
+Before this ADR can become `Accepted`, the named protocol maintainer must
+confirm that the one-epoch retirement window and terminal timeout semantics are
+the intended Version 1 contract. The review must also confirm that this
+in-process evidence is sufficient to begin, but not replace, Stage 2 carrier
+integration evidence.
+
 ## Review or Invalidation Trigger
 
 Supersede if a simpler carrier-native mechanism meets the continuity targets or
@@ -73,4 +93,3 @@ if bounded acknowledgement state cannot be achieved within resource budgets.
 ## Supersedes
 
 None.
-

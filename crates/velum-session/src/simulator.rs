@@ -99,7 +99,7 @@ mod tests {
     use velum_protocol::{Epoch, Sequence};
 
     use super::*;
-    use crate::{FlowLimits, ReceiveResult, SessionTracer};
+    use crate::{Acknowledgement, FlowLimits, ReceiveResult, SessionTracer};
 
     fn session() -> SessionTracer {
         SessionTracer::new(
@@ -107,19 +107,18 @@ mod tests {
             FlowLimits {
                 max_pending_segments: 8,
                 max_pending_bytes: 8,
+                max_pending_age: 10,
             },
         )
     }
 
     fn receive_all(
         receiver: &mut SessionTracer,
-        flow: velum_protocol::FlowId,
         segments: Vec<Segment>,
         delivered: &mut Vec<Vec<u8>>,
     ) {
         for segment in segments {
-            if let ReceiveResult::Delivered(bytes) = receiver.receive(flow, segment).expect("flow")
-            {
+            if let ReceiveResult::Delivered(bytes) = receiver.receive(segment).expect("flow") {
                 delivered.push(bytes);
             }
         }
@@ -130,7 +129,7 @@ mod tests {
         let mut sender = session();
         let mut receiver = session();
         let sender_flow = sender.open_reliable_flow();
-        let receiver_flow = receiver.open_reliable_flow();
+        receiver.open_reliable_flow();
         let first = sender.send(sender_flow, vec![0]).expect("first");
         let second = sender.send(sender_flow, vec![1]).expect("second");
         let third = sender.send(sender_flow, vec![2]).expect("third");
@@ -140,34 +139,27 @@ mod tests {
         carrier.transmit(first, CarrierDisposition::Delay(1));
         carrier.transmit(second, CarrierDisposition::Duplicate);
         carrier.transmit(third, CarrierDisposition::Drop);
-        receive_all(
-            &mut receiver,
-            receiver_flow,
-            carrier.advance(0),
-            &mut delivered,
-        );
-        receive_all(
-            &mut receiver,
-            receiver_flow,
-            carrier.advance(1),
-            &mut delivered,
-        );
+        receive_all(&mut receiver, carrier.advance(0), &mut delivered);
+        receive_all(&mut receiver, carrier.advance(1), &mut delivered);
         assert_eq!(delivered, vec![vec![0]]);
 
         sender
-            .acknowledge(sender_flow, Sequence(0))
+            .acknowledge(Acknowledgement {
+                flow_id: sender_flow,
+                epoch: sender.epoch(),
+                through: Sequence(0),
+            })
             .expect("first acknowledgement");
         for segment in sender.pending(sender_flow).expect("pending segments") {
             carrier.transmit(segment, CarrierDisposition::Deliver);
         }
-        receive_all(
-            &mut receiver,
-            receiver_flow,
-            carrier.advance(0),
-            &mut delivered,
-        );
+        receive_all(&mut receiver, carrier.advance(0), &mut delivered);
         sender
-            .acknowledge(sender_flow, Sequence(2))
+            .acknowledge(Acknowledgement {
+                flow_id: sender_flow,
+                epoch: sender.epoch(),
+                through: Sequence(2),
+            })
             .expect("retransmission acknowledgement");
 
         assert_eq!(delivered, vec![vec![0], vec![1], vec![2]]);
@@ -183,6 +175,8 @@ mod tests {
     fn black_hole_drops_attempts_until_recovery() {
         let mut carrier = InMemoryCarrier::new();
         let segment = Segment {
+            flow_id: velum_protocol::FlowId(0),
+            epoch: Epoch(0),
             sequence: Sequence(0),
             bytes: vec![1],
         };
