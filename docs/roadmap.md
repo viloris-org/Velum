@@ -37,7 +37,7 @@ When evidence becomes stale or a regression is found, move the item back to
 |---|---|---|---|---|
 | Foundation | Reproducible repository and engineering controls | `IN PROGRESS` | Pinned workspace, executable architecture/docs/test gates, Stage 0 harness, CI and governance artifacts | Default-branch CI evidence, policy review, CI health baseline |
 | 0 | Validate the problem and competitor baselines | `IN PROGRESS` | Manifests and retained-result integrity checks pass; local harness tests pass | Five interviews, reference server pinning, executable baselines, raw runs |
-| 1 | Prove the carrier-independent session state model | `NOT STARTED` | Proposed architecture and requirements only | Deterministic in-process tracer |
+| 1 | Prove the carrier-independent session state model | `IN PROGRESS` | Deterministic reliable-stream tracer and focused checks | Exhaustive faults and seeded transition campaigns |
 | 2 | Deliver a QUIC end-to-end slice | `NOT STARTED` | None | Real client-to-server stream and datagram flow |
 | 3 | Preserve streams across QUIC/TLS transitions | `NOT STARTED` | None | 10,000 correct fault trials and transition budgets |
 | 4 | Add Forest Native service coexistence | `NOT STARTED` | Threat-model proposal only | Differential probes and independent deployments |
@@ -130,15 +130,15 @@ wire protocol.
 
 | ID | Deliverable | Status | Evidence / completion check |
 |---|---|---|---|
-| S1-01 | `protocol`, `session`, `carrier-api`, `policy`, and `telemetry` crates | `TODO` | Workspace builds; architecture check passes |
-| S1-02 | Deterministic state-machine model before final frame bytes | `TODO` | Model and transition table are reviewable |
-| S1-03 | In-memory carrier simulator for loss, duplication, reordering, delay, black holes, and recovery | `TODO` | Deterministic scenario tests cover every fault |
+| S1-01 | `protocol`, `session`, `carrier-api`, `policy`, and `telemetry` crates | `DONE` | [`crates/`](../crates); `cargo check --workspace` and `cargo xtask architecture` pass |
+| S1-02 | Deterministic state-machine model before final frame bytes | `DONE` | [`session-tracer.md`](session-tracer.md); `cargo xtask model-check` passes |
+| S1-03 | In-memory carrier simulator for loss, duplication, reordering, delay, black holes, and recovery | `DONE` | [`simulator.rs`](../crates/velum-session/src/simulator.rs); deterministic scenarios cover every listed fault and recovery |
 | S1-04 | Flow identity, epochs, logical acknowledgements, replay windows, and transition state | `TODO` | Unit and model tests enforce ownership invariants |
-| S1-05 | Bounded memory, queues, replay windows, and timeouts | `TODO` | Limit tests demonstrate rejection or backpressure |
-| S1-06 | Duplicate-free, gap-free reliable-stream behavior | `TODO` | Exhaustive small-state checks pass |
+| S1-05 | Bounded memory, queues, replay windows, and timeouts | `PARTIAL` | Pending-segment and byte limits reject excess data; replay windows and timeouts remain open |
+| S1-06 | Duplicate-free, gap-free reliable-stream behavior | `PARTIAL` | Deterministic checks exhaustively cover short duplicate and gap traces plus recovery after simulated carrier faults; broader transition state remains open |
 | S1-07 | 10,000 seeded randomized transitions with byte-exact checksums | `TODO` | Seeds and results retained in CI artifacts |
 | S1-08 | Parser fuzz targets and corpus retention | `TODO` | Every parser introduced in this stage is fuzzed |
-| S1-09 | `cargo xtask architecture` and `cargo xtask model-check` | `TODO` | Both commands pass locally and in CI |
+| S1-09 | `cargo xtask architecture` and `cargo xtask model-check` | `PARTIAL` | Commands exist and pass locally; CI integration follows the full fault model |
 | S1-10 | ADR-0002 accepted, rejected, or superseded | `TODO` | Review uses tracer evidence |
 
 ### Exit Gate

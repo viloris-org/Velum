@@ -23,6 +23,8 @@ questions. Proposed ADRs are not final protocol commitments.
   deployment requirements.
 - [Protocol requirements](protocol-requirements.md): delivery semantics,
   invariants, quality scenarios, and fitness functions.
+- [Stage 1 session tracer](session-tracer.md): deterministic reliable-flow
+  state model and transition table.
 - [Architecture contract](architecture-contract.yaml): initial machine-readable
   module and dependency boundaries, enforced by `cargo xtask architecture`.
 
@@ -50,6 +52,7 @@ questions. Proposed ADRs are not final protocol commitments.
 - `cargo xtask architecture` validates runtime ownership and dependency rules.
 - `cargo xtask docs` validates repository-local Markdown links.
 - `cargo xtask test` runs every current Foundation gate.
+- `cargo xtask model-check` runs the deterministic Stage 1 tracer checks.
 
 Commands planned for later roadmap stages are not advertised as passing until
 their implementation and blocking CI evidence exist.

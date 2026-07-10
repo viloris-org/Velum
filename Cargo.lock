@@ -395,6 +395,47 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "673aac59facbab8a9007c7f6108d11f63b603f7cabff99fabf650fea5c32b861"
 
 [[package]]
+name = "velum-carrier-api"
+version = "0.0.0"
+dependencies = [
+ "velum-protocol",
+]
+
+[[package]]
+name = "velum-crypto"
+version = "0.0.0"
+dependencies = [
+ "velum-protocol",
+]
+
+[[package]]
+name = "velum-policy"
+version = "0.0.0"
+dependencies = [
+ "velum-carrier-api",
+ "velum-telemetry",
+]
+
+[[package]]
+name = "velum-protocol"
+version = "0.0.0"
+
+[[package]]
+name = "velum-session"
+version = "0.0.0"
+dependencies = [
+ "velum-carrier-api",
+ "velum-crypto",
+ "velum-policy",
+ "velum-protocol",
+ "velum-telemetry",
+]
+
+[[package]]
+name = "velum-telemetry"
+version = "0.0.0"
+
+[[package]]
 name = "windows-link"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

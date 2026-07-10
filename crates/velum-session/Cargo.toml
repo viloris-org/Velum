@@ -1,0 +1,16 @@
+[package]
+name = "velum-session"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+velum-carrier-api = { version = "0.0.0", path = "../velum-carrier-api" }
+velum-crypto = { version = "0.0.0", path = "../velum-crypto" }
+velum-policy = { version = "0.0.0", path = "../velum-policy" }
+velum-protocol = { version = "0.0.0", path = "../velum-protocol" }
+velum-telemetry = { version = "0.0.0", path = "../velum-telemetry" }
+
+[lints]
+workspace = true

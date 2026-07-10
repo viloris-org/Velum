@@ -1,5 +1,13 @@
 [workspace]
-members = ["xtask"]
+members = [
+    "xtask",
+    "crates/velum-protocol",
+    "crates/velum-crypto",
+    "crates/velum-carrier-api",
+    "crates/velum-telemetry",
+    "crates/velum-policy",
+    "crates/velum-session",
+]
 resolver = "3"
 
 [workspace.package]
@@ -12,4 +20,3 @@ unsafe_code = "forbid"
 
 [workspace.lints.clippy]
 all = "warn"
-

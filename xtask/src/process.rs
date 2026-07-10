@@ -35,6 +35,16 @@ pub fn test_all(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+pub fn model_check(root: &Path) -> Result<(), String> {
+    run(
+        root,
+        "cargo",
+        &["test", "-p", "velum-session", "--all-targets"],
+    )?;
+    println!("Deterministic session tracer checks passed.");
+    Ok(())
+}
+
 fn run(root: &Path, program: &str, args: &[&str]) -> Result<(), String> {
     println!("running: {program} {}", args.join(" "));
     let status = Command::new(program)
