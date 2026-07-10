@@ -30,9 +30,11 @@ fn session() -> SessionTracer {
     SessionTracer::new(
         Epoch(0),
         FlowLimits {
+            max_flows: 1,
             max_pending_segments: 8,
             max_pending_bytes: 128,
             max_pending_age: 16,
+            max_events: 16,
         },
     )
 }
@@ -66,17 +68,18 @@ fn run_trial(seed: u64) -> u64 {
     let mut random = Generator::new(seed);
     let mut sender = session();
     let mut receiver = session();
-    let sender_flow = sender.open_reliable_flow();
-    receiver.open_reliable_flow();
+    let sender_flow = sender.open_reliable_flow().expect("open sender flow");
+    receiver.open_reliable_flow().expect("open receiver flow");
     let mut carrier = InMemoryCarrier::new();
     let mut expected = Vec::new();
     let mut delivered = Vec::new();
+    let transition_after = (random.next() % 3 + 1) as usize;
 
     for index in 0..4 {
         let bytes = random.bytes();
         expected.extend_from_slice(&bytes);
         let segment = sender.send(sender_flow, bytes).expect("within limits");
-        if index == 2 {
+        if index + 1 == transition_after {
             assert_eq!(sender.begin_transition(), Epoch(1));
             assert_eq!(receiver.begin_transition(), Epoch(1));
         }
@@ -99,6 +102,13 @@ fn run_trial(seed: u64) -> u64 {
         recovery.transmit(segment, CarrierDisposition::Deliver);
     }
     deliver(&mut receiver, recovery.advance(0), &mut delivered);
+    sender
+        .acknowledge(Acknowledgement {
+            flow_id: sender_flow,
+            epoch: Epoch(0),
+            through: Sequence((transition_after - 1) as u64),
+        })
+        .expect("retiring epoch acknowledgement");
     receiver.complete_transition();
     sender
         .acknowledge(Acknowledgement {
@@ -119,5 +129,5 @@ fn ten_thousand_seeded_transitions_preserve_byte_exact_delivery() {
         checksum.wrapping_add(run_trial(seed))
     });
 
-    assert_eq!(campaign_checksum, 11_202_198_267_056_387_872);
+    assert_eq!(campaign_checksum, 4_550_704_779_471_716_960);
 }

@@ -77,7 +77,7 @@ age state bounded.
 seeded transition trials. The seeded campaign covers loss, duplication, delay,
 black holes, recovery retransmission, and an epoch transition; each trial
 checks byte-exact application output. The campaign's retained aggregate is
-`11202198267056387872` for seeds `0..9999`.
+`4550704779471716960` for seeds `0..9999`, with a varied transition position.
 
 Before this ADR can become `Accepted`, the named protocol maintainer must
 confirm that the one-epoch retirement window and terminal timeout semantics are

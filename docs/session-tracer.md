@@ -70,15 +70,15 @@ cargo xtask model-check
 ```
 
 The suite covers duplicate-free in-order delivery, gap rejection, cumulative
-acknowledgement, invalid acknowledgements, bounded pending memory, flow
-identity, retiring-epoch acknowledgements, and stale-epoch rejection. It also
+acknowledgement, invalid acknowledgements, bounded session metadata and pending
+memory, flow identity, retiring-epoch acknowledgements, and stale-epoch rejection. It also
 exhaustively checks every receive trace up to four events over a three-sequence
 input alphabet, plus deterministic loss, duplication, reordering, delay,
 black-hole, recovery, and pending-timeout scenarios.
 
 The seeded campaign runs 10,000 transitions over seeds `0..9999`. Every trial
-mixes dropped, duplicated, delayed, and black-holed delivery before an epoch
-transition and ordered recovery retransmission. It compares the complete
+mixes dropped, duplicated, delayed, and black-holed delivery around a
+varying-position epoch transition and ordered recovery retransmission. It compares the complete
 application byte sequence and contributes its FNV-1a checksum to the retained
-aggregate `11202198267056387872`. Required CI stores the model-check log as a
+aggregate `4550704779471716960`. Required CI stores the model-check log as a
 90-day artifact.

@@ -34,14 +34,17 @@ pub struct Acknowledgement {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct FlowLimits {
+    pub max_flows: usize,
     pub max_pending_segments: usize,
     pub max_pending_bytes: usize,
     pub max_pending_age: u64,
+    pub max_events: usize,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TraceError {
     UnknownFlow,
+    FlowLimit,
     PendingSegmentLimit,
     PendingByteLimit,
     FlowTimedOut,
@@ -88,6 +91,8 @@ impl SessionTracer {
         assert!(limits.max_pending_segments > 0);
         assert!(limits.max_pending_bytes > 0);
         assert!(limits.max_pending_age > 0);
+        assert!(limits.max_flows > 0);
+        assert!(limits.max_events > 0);
         Self {
             transition: TransitionState::new(epoch),
             tick: 0,
@@ -102,7 +107,10 @@ impl SessionTracer {
         self.transition.current()
     }
 
-    pub fn open_reliable_flow(&mut self) -> FlowId {
+    pub fn open_reliable_flow(&mut self) -> Result<FlowId, TraceError> {
+        if self.flows.len() >= self.limits.max_flows {
+            return Err(TraceError::FlowLimit);
+        }
         let flow_id = FlowId(self.next_flow);
         self.next_flow = self
             .next_flow
@@ -118,8 +126,8 @@ impl SessionTracer {
                 timed_out: false,
             },
         );
-        self.events.push(SessionEvent::FlowOpened);
-        flow_id
+        self.record_event(SessionEvent::FlowOpened);
+        Ok(flow_id)
     }
 
     pub fn send(&mut self, flow_id: FlowId, bytes: Vec<u8>) -> Result<Segment, TraceError> {
@@ -132,7 +140,7 @@ impl SessionTracer {
             return Err(TraceError::FlowTimedOut);
         }
         if flow.pending.len() == self.limits.max_pending_segments {
-            self.events.push(SessionEvent::PendingLimitReached);
+            self.record_event(SessionEvent::PendingLimitReached);
             return Err(TraceError::PendingSegmentLimit);
         }
         if bytes.len()
@@ -141,7 +149,7 @@ impl SessionTracer {
                 .max_pending_bytes
                 .saturating_sub(flow.pending_bytes)
         {
-            self.events.push(SessionEvent::PendingLimitReached);
+            self.record_event(SessionEvent::PendingLimitReached);
             return Err(TraceError::PendingByteLimit);
         }
         let segment = Segment {
@@ -175,6 +183,12 @@ impl SessionTracer {
         if acknowledgement.through.0 >= flow.next_send.0 {
             return Err(TraceError::InvalidAcknowledgement);
         }
+        if flow.pending.iter().any(|pending| {
+            pending.segment.sequence <= acknowledgement.through
+                && pending.segment.epoch > acknowledgement.epoch
+        }) {
+            return Err(TraceError::InvalidAcknowledgement);
+        }
         while flow
             .pending
             .front()
@@ -196,11 +210,11 @@ impl SessionTracer {
             return Err(TraceError::FlowTimedOut);
         }
         if segment.sequence < flow.next_receive {
-            self.events.push(SessionEvent::DuplicateIgnored);
+            self.record_event(SessionEvent::DuplicateIgnored);
             return Ok(ReceiveResult::Duplicate);
         }
         if segment.sequence > flow.next_receive {
-            self.events.push(SessionEvent::OutOfOrderRejected);
+            self.record_event(SessionEvent::OutOfOrderRejected);
             return Ok(ReceiveResult::OutOfOrder);
         }
         flow.next_receive = Sequence(
@@ -243,8 +257,10 @@ impl SessionTracer {
                 flow.pending_bytes = 0;
                 flow.timed_out = true;
                 timed_out.push(*flow_id);
-                self.events.push(SessionEvent::FlowTimedOut);
             }
+        }
+        for _ in &timed_out {
+            self.record_event(SessionEvent::FlowTimedOut);
         }
         timed_out
     }
@@ -271,6 +287,13 @@ impl SessionTracer {
             EpochValidity::Future => Err(TraceError::FutureEpoch),
         }
     }
+
+    fn record_event(&mut self, event: SessionEvent) {
+        if self.events.len() >= self.limits.max_events {
+            self.events.remove(0);
+        }
+        self.events.push(event);
+    }
 }
 
 #[cfg(test)]
@@ -281,9 +304,11 @@ mod tests {
         SessionTracer::new(
             Epoch(0),
             FlowLimits {
+                max_flows: 2,
                 max_pending_segments: 2,
                 max_pending_bytes: 3,
                 max_pending_age: 2,
+                max_events: 2,
             },
         )
     }
@@ -291,7 +316,7 @@ mod tests {
     #[test]
     fn reliable_flow_delivers_each_sequence_once() {
         let mut session = tracer();
-        let flow = session.open_reliable_flow();
+        let flow = session.open_reliable_flow().expect("open flow");
         let first = session.send(flow, vec![1]).expect("send first");
         let second = session.send(flow, vec![2]).expect("send second");
         assert_eq!(
@@ -312,7 +337,7 @@ mod tests {
     #[test]
     fn cumulative_acknowledgement_releases_only_confirmed_segments() {
         let mut session = tracer();
-        let flow = session.open_reliable_flow();
+        let flow = session.open_reliable_flow().expect("open flow");
         session.send(flow, vec![1]).expect("send first");
         session.send(flow, vec![2]).expect("send second");
         session
@@ -336,7 +361,7 @@ mod tests {
     #[test]
     fn pending_memory_is_bounded() {
         let mut session = tracer();
-        let flow = session.open_reliable_flow();
+        let flow = session.open_reliable_flow().expect("open flow");
         session.send(flow, vec![1, 2, 3]).expect("fill byte budget");
         assert_eq!(
             session.send(flow, vec![4]),
@@ -355,7 +380,7 @@ mod tests {
     #[test]
     fn pending_timeout_releases_memory_by_terminating_the_flow() {
         let mut session = tracer();
-        let flow = session.open_reliable_flow();
+        let flow = session.open_reliable_flow().expect("open flow");
         session.send(flow, vec![1, 2, 3]).expect("send");
         assert!(session.advance_time(1).is_empty());
         assert_eq!(session.advance_time(1), vec![flow]);
@@ -374,7 +399,7 @@ mod tests {
         fn explore(prefix: &mut Vec<u64>, depth: usize) {
             if depth == 0 {
                 let mut session = tracer();
-                let flow = session.open_reliable_flow();
+                let flow = session.open_reliable_flow().expect("open flow");
                 let mut delivered = Vec::new();
                 for sequence in prefix.iter().copied() {
                     if let ReceiveResult::Delivered(bytes) = session
@@ -407,7 +432,7 @@ mod tests {
     #[test]
     fn flow_identity_and_epoch_bound_delivery_during_transition() {
         let mut session = tracer();
-        let flow = session.open_reliable_flow();
+        let flow = session.open_reliable_flow().expect("open flow");
         let first = session.send(flow, vec![1]).expect("first");
         assert_eq!(first.flow_id, flow);
         assert_eq!(first.epoch, Epoch(0));
@@ -424,7 +449,7 @@ mod tests {
     #[test]
     fn acknowledgements_use_the_same_bounded_epoch_window() {
         let mut session = tracer();
-        let flow = session.open_reliable_flow();
+        let flow = session.open_reliable_flow().expect("open flow");
         session.send(flow, vec![1]).expect("first");
         session.begin_transition();
         session
@@ -443,5 +468,52 @@ mod tests {
             }),
             Err(TraceError::StaleEpoch)
         );
+    }
+
+    #[test]
+    fn retiring_epoch_acknowledgement_cannot_acknowledge_current_epoch_segments() {
+        let mut session = tracer();
+        let flow = session.open_reliable_flow().expect("open flow");
+        session.send(flow, vec![0]).expect("old epoch segment");
+        assert_eq!(session.begin_transition(), Epoch(1));
+        session.send(flow, vec![1]).expect("current epoch segment");
+
+        assert_eq!(
+            session.acknowledge(Acknowledgement {
+                flow_id: flow,
+                epoch: Epoch(0),
+                through: Sequence(1),
+            }),
+            Err(TraceError::InvalidAcknowledgement)
+        );
+        assert_eq!(session.pending(flow).expect("pending").len(), 2);
+    }
+
+    #[test]
+    fn session_metadata_is_bounded() {
+        let mut session = SessionTracer::new(
+            Epoch(0),
+            FlowLimits {
+                max_flows: 1,
+                max_pending_segments: 2,
+                max_pending_bytes: 2,
+                max_pending_age: 2,
+                max_events: 2,
+            },
+        );
+        let flow = session.open_reliable_flow().expect("first flow");
+        assert_eq!(session.open_reliable_flow(), Err(TraceError::FlowLimit));
+
+        let segment = session.send(flow, vec![0]).expect("segment");
+        assert_eq!(
+            session.receive(segment.clone()),
+            Ok(ReceiveResult::Delivered(vec![0]))
+        );
+        assert_eq!(
+            session.receive(segment.clone()),
+            Ok(ReceiveResult::Duplicate)
+        );
+        assert_eq!(session.receive(segment), Ok(ReceiveResult::Duplicate));
+        assert_eq!(session.events().len(), 2);
     }
 }

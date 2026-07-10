@@ -105,9 +105,11 @@ mod tests {
         SessionTracer::new(
             Epoch(0),
             FlowLimits {
+                max_flows: 1,
                 max_pending_segments: 8,
                 max_pending_bytes: 8,
                 max_pending_age: 10,
+                max_events: 16,
             },
         )
     }
@@ -128,8 +130,8 @@ mod tests {
     fn faults_then_ordered_retransmission_deliver_each_segment_once() {
         let mut sender = session();
         let mut receiver = session();
-        let sender_flow = sender.open_reliable_flow();
-        receiver.open_reliable_flow();
+        let sender_flow = sender.open_reliable_flow().expect("open sender flow");
+        receiver.open_reliable_flow().expect("open receiver flow");
         let first = sender.send(sender_flow, vec![0]).expect("first");
         let second = sender.send(sender_flow, vec![1]).expect("second");
         let third = sender.send(sender_flow, vec![2]).expect("third");
