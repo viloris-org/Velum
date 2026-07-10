@@ -1,0 +1,35 @@
+name: Required CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: required-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  foundation:
+    name: Foundation gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Set up Node 22.22.2
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .node-version
+      - name: Install pinned Rust toolchain
+        run: |
+          rustup toolchain install 1.97.0 --profile minimal --component clippy,rustfmt
+          rustup override set 1.97.0
+      - name: Install cargo-deny 0.20.2
+        run: cargo install cargo-deny --locked --version 0.20.2
+      - name: Run Foundation gates
+        run: cargo xtask test
+

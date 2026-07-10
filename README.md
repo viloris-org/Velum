@@ -22,7 +22,19 @@ toggle.
 - Keep the Rust implementation split by responsibility and protocol layer.
 
 Start with the [documentation index](docs/README.md) and the
-[roadmap](docs/roadmap.md).
+[implementation status and roadmap](docs/roadmap.md).
+
+## Current Validation
+
+The repository pins Node 22.22.2 and Rust 1.97.0. With `cargo-deny` 0.20.2
+installed, run every current Foundation gate with:
+
+```bash
+cargo xtask test
+```
+
+Architecture and documentation checks are also available independently as
+`cargo xtask architecture` and `cargo xtask docs`.
 
 ## Current Non-Goals
 
@@ -32,3 +44,6 @@ Start with the [documentation index](docs/README.md) and the
 - Shipping multi-hop anonymity in the first protocol version.
 - Freezing a wire format before the tracer experiments succeed.
 
+Velum is licensed under the [Apache License 2.0](LICENSE). Contribution,
+security, support, and release expectations are defined in the corresponding
+repository policies.

@@ -1,0 +1,46 @@
+name: CI Health
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Install pinned Rust toolchain
+        run: |
+          rustup toolchain install 1.97.0 --profile minimal
+          rustup override set 1.97.0
+      - name: Download Required CI history
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api "repos/${{ github.repository }}/actions/workflows/ci.yml/runs?status=completed&per_page=100" > ci-runs.json
+      - name: Evaluate budgets
+        id: metrics
+        continue-on-error: true
+        run: cargo xtask ci-metrics ci-runs.json ci-health.json
+      - name: Publish summary
+        run: |
+          echo '## CI health' >> "$GITHUB_STEP_SUMMARY"
+          echo '```json' >> "$GITHUB_STEP_SUMMARY"
+          cat ci-health.json >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+      - name: Retain metrics
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ci-health-${{ github.run_id }}
+          path: ci-health.json
+          if-no-files-found: error
+          retention-days: 90
+      - name: Enforce mature budgets
+        if: steps.metrics.outcome == 'failure'
+        run: exit 1
+

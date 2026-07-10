@@ -24,11 +24,13 @@ questions. Proposed ADRs are not final protocol commitments.
 - [Protocol requirements](protocol-requirements.md): delivery semantics,
   invariants, quality scenarios, and fitness functions.
 - [Architecture contract](architecture-contract.yaml): initial machine-readable
-  module and dependency boundaries.
+  module and dependency boundaries, enforced by `cargo xtask architecture`.
 
 ## Delivery and Decisions
 
 - [Roadmap](roadmap.md): evidence-driven delivery stages and exit gates.
+- [Contribution policy](../CONTRIBUTING.md), [security policy](../SECURITY.md),
+  [support policy](../SUPPORT.md), and [release policy](../RELEASES.md).
 - [ADR-0001: Product position](adr/0001-product-position.md)
 - [ADR-0002: Multi-carrier sessions](adr/0002-multi-carrier-sessions.md)
 - [ADR-0003: Forest Native](adr/0003-forest-native.md)
@@ -42,3 +44,12 @@ questions. Proposed ADRs are not final protocol commitments.
 | Wire protocol | Not defined | State machine and carrier experiments converge |
 | Security model | Proposed | Independent review closes critical findings |
 | Roadmap | Active | Updated at every stage gate |
+
+## Repository Checks
+
+- `cargo xtask architecture` validates runtime ownership and dependency rules.
+- `cargo xtask docs` validates repository-local Markdown links.
+- `cargo xtask test` runs every current Foundation gate.
+
+Commands planned for later roadmap stages are not advertised as passing until
+their implementation and blocking CI evidence exist.

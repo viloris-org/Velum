@@ -1,6 +1,14 @@
 version: 1
 status: proposed
 
+governance:
+  governed_paths: ["crates/**", "apps/**"]
+  excluded_paths: []
+
+# Repository tooling such as xtask is deliberately outside the runtime module
+# graph. Every package created under a governed path becomes blocking
+# immediately; declared modules with no files remain inactive.
+
 # Paths become enforceable as crates are created. Owners are responsibility
 # labels until project maintainers are assigned.
 modules:
