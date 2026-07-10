@@ -121,6 +121,7 @@ modules:
       - carrier-quic
       - carrier-tls
       - adapters
+      - server
       - telemetry
     public_api: []
     owns: [configuration, process-lifecycle, dependency-wiring]

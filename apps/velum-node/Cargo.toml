@@ -5,5 +5,12 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
+[dependencies]
+quinn = { version = "=0.11.11", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
+tokio = { version = "=1.48.0", features = ["io-util", "macros", "net", "sync", "time"] }
+velum-carrier-quic = { version = "0.0.0", path = "../../crates/velum-carrier-quic" }
+velum-server = { version = "0.0.0", path = "../../crates/velum-server" }
+velum-telemetry = { version = "0.0.0", path = "../../crates/velum-telemetry" }
+
 [lints]
 workspace = true

@@ -15,6 +15,14 @@ pub struct QuicStream {
 }
 
 impl QuicStream {
+    /// Transfers the QUIC stream halves to an application-owned relay.
+    ///
+    /// The carrier remains responsible for transport mapping; the application
+    /// owns local socket lifecycle and destination policy enforcement.
+    pub fn into_parts(self) -> (quinn::SendStream, quinn::RecvStream) {
+        (self.send, self.receive)
+    }
+
     pub async fn write_all(&mut self, bytes: &[u8]) -> Result<(), CarrierError> {
         self.send
             .write_all(bytes)

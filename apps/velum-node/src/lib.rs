@@ -2,10 +2,227 @@
 //!
 //! This record is not a Velum wire protocol and must be replaced before Stage 5.
 
-use std::net::SocketAddr;
+use std::{net::SocketAddr, sync::Arc, time::Duration};
+
+use tokio::{net::TcpStream, sync::Mutex, time::timeout};
+use velum_carrier_quic::QuicStream;
+use velum_server::{
+    AdmissionControl, AdmissionError, Authenticator, DestinationPolicy, PrincipalId, SessionLease,
+};
+use velum_telemetry::QuicRelayEvent;
 
 const MAX_SECRET_BYTES: usize = 128;
 const HEADER_BYTES: usize = 4;
+
+/// Versioned, application-owned configuration for the experimental QUIC
+/// listener. Secrets and certificates are supplied out of band.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct QuicRelayConfig {
+    pub schema_version: u16,
+    pub connect_timeout: Duration,
+    pub max_control_bytes: usize,
+}
+
+impl Default for QuicRelayConfig {
+    fn default() -> Self {
+        Self {
+            schema_version: 1,
+            connect_timeout: Duration::from_secs(5),
+            max_control_bytes: MAX_SECRET_BYTES + 64,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ConfigError {
+    UnsupportedSchema,
+    ZeroConnectTimeout,
+    ControlLimitTooSmall,
+}
+
+impl QuicRelayConfig {
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        if self.schema_version != 1 {
+            return Err(ConfigError::UnsupportedSchema);
+        }
+        if self.connect_timeout.is_zero() {
+            return Err(ConfigError::ZeroConnectTimeout);
+        }
+        if self.max_control_bytes < HEADER_BYTES + 1 + "[::1]:65535".len() {
+            return Err(ConfigError::ControlLimitTooSmall);
+        }
+        Ok(())
+    }
+}
+
+/// Export boundary for payload-free lifecycle events.
+pub trait RelayObserver: Send + Sync {
+    fn record(&self, event: QuicRelayEvent);
+}
+
+#[derive(Default)]
+pub struct NoopRelayObserver;
+
+impl RelayObserver for NoopRelayObserver {
+    fn record(&self, _: QuicRelayEvent) {}
+}
+
+/// Shared process-local state for a single admitted QUIC connection.
+pub struct RelayAdmission {
+    pub authenticator: Arc<Authenticator>,
+    pub destinations: Arc<DestinationPolicy>,
+    pub quotas: Arc<Mutex<AdmissionControl>>,
+}
+
+/// Failure classification intentionally omits credentials and destination data.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RelayError {
+    InvalidControl,
+    AuthenticationRejected,
+    DestinationRejected,
+    SessionQuotaRejected,
+    FlowQuotaRejected,
+    ConnectFailed,
+    Transport,
+}
+
+/// Accepts one authenticated QUIC flow, connects only to an exact allowed
+/// target, and relays bytes bidirectionally. The session and flow leases are
+/// released on every return path.
+pub async fn relay_quic_stream(
+    stream: QuicStream,
+    admission: &RelayAdmission,
+    config: &QuicRelayConfig,
+    observer: &dyn RelayObserver,
+) -> Result<(), RelayError> {
+    config.validate().map_err(|_| RelayError::InvalidControl)?;
+    let (mut send, mut receive) = stream.into_parts();
+    let request = read_open_request(&mut receive, config.max_control_bytes).await?;
+    let principal = admission
+        .authenticator
+        .authenticate(&request.secret)
+        .map_err(|_| {
+            observer.record(QuicRelayEvent::AuthenticationRejected);
+            RelayError::AuthenticationRejected
+        })?;
+    if !admission.destinations.allows(request.target) {
+        observer.record(QuicRelayEvent::DestinationRejected);
+        return Err(RelayError::DestinationRejected);
+    }
+
+    let lease = open_session(&admission.quotas, principal, observer).await?;
+    if let Err(error) = open_flow(&admission.quotas, principal, lease, observer).await {
+        let _ = admission
+            .quotas
+            .lock()
+            .await
+            .close_session(principal, lease);
+        return Err(error);
+    }
+    let result = relay_parts(
+        &mut send,
+        &mut receive,
+        request.target,
+        config.connect_timeout,
+    )
+    .await;
+    let mut quotas = admission.quotas.lock().await;
+    let _ = quotas.close_flow(principal, lease);
+    let _ = quotas.close_session(principal, lease);
+    drop(quotas);
+    if result.is_ok() {
+        observer.record(QuicRelayEvent::FlowRelayed);
+    } else {
+        observer.record(QuicRelayEvent::ConnectFailed);
+    }
+    result
+}
+
+async fn read_open_request(
+    receive: &mut quinn::RecvStream,
+    maximum: usize,
+) -> Result<OpenRequest, RelayError> {
+    if maximum < HEADER_BYTES {
+        return Err(RelayError::InvalidControl);
+    }
+    let mut header = [0; HEADER_BYTES];
+    receive
+        .read_exact(&mut header)
+        .await
+        .map_err(|_| RelayError::Transport)?;
+    let secret_length = usize::from(u16::from_be_bytes([header[0], header[1]]));
+    let target_length = usize::from(u16::from_be_bytes([header[2], header[3]]));
+    let length = HEADER_BYTES
+        .checked_add(secret_length)
+        .and_then(|value| value.checked_add(target_length))
+        .ok_or(RelayError::InvalidControl)?;
+    if length > maximum {
+        return Err(RelayError::InvalidControl);
+    }
+    let mut encoded = vec![0; length];
+    encoded[..HEADER_BYTES].copy_from_slice(&header);
+    receive
+        .read_exact(&mut encoded[HEADER_BYTES..])
+        .await
+        .map_err(|_| RelayError::Transport)?;
+    decode_open(&encoded).map_err(|_| RelayError::InvalidControl)
+}
+
+async fn open_session(
+    quotas: &Mutex<AdmissionControl>,
+    principal: PrincipalId,
+    observer: &dyn RelayObserver,
+) -> Result<SessionLease, RelayError> {
+    quotas
+        .lock()
+        .await
+        .open_session(principal)
+        .map_err(|error| match error {
+            AdmissionError::SessionQuotaExceeded => {
+                observer.record(QuicRelayEvent::SessionQuotaRejected);
+                RelayError::SessionQuotaRejected
+            }
+            _ => RelayError::Transport,
+        })
+}
+
+async fn open_flow(
+    quotas: &Mutex<AdmissionControl>,
+    principal: PrincipalId,
+    lease: SessionLease,
+    observer: &dyn RelayObserver,
+) -> Result<(), RelayError> {
+    quotas
+        .lock()
+        .await
+        .open_flow(principal, lease)
+        .map_err(|error| match error {
+            AdmissionError::FlowQuotaExceeded => {
+                observer.record(QuicRelayEvent::FlowQuotaRejected);
+                RelayError::FlowQuotaRejected
+            }
+            _ => RelayError::Transport,
+        })
+}
+
+async fn relay_parts(
+    send: &mut quinn::SendStream,
+    receive: &mut quinn::RecvStream,
+    target: SocketAddr,
+    connect_timeout: Duration,
+) -> Result<(), RelayError> {
+    let mut target = timeout(connect_timeout, TcpStream::connect(target))
+        .await
+        .map_err(|_| RelayError::ConnectFailed)?
+        .map_err(|_| RelayError::ConnectFailed)?;
+    let (mut target_read, mut target_write) = target.split();
+    let client_to_target = tokio::io::copy(receive, &mut target_write);
+    let target_to_client = tokio::io::copy(&mut target_read, send);
+    let (client_result, target_result) = tokio::join!(client_to_target, target_to_client);
+    client_result.map_err(|_| RelayError::Transport)?;
+    target_result.map_err(|_| RelayError::Transport)?;
+    send.finish().map_err(|_| RelayError::Transport)
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OpenRequest {
@@ -87,6 +304,27 @@ mod tests {
                 target: "192.0.2.10:443".parse().expect("target"),
             }),
             Err(ControlError::SecretTooLarge)
+        );
+    }
+
+    #[test]
+    fn relay_configuration_is_versioned_and_bounded() {
+        assert!(QuicRelayConfig::default().validate().is_ok());
+        assert_eq!(
+            QuicRelayConfig {
+                schema_version: 2,
+                ..QuicRelayConfig::default()
+            }
+            .validate(),
+            Err(ConfigError::UnsupportedSchema)
+        );
+        assert_eq!(
+            QuicRelayConfig {
+                max_control_bytes: 1,
+                ..QuicRelayConfig::default()
+            }
+            .validate(),
+            Err(ConfigError::ControlLimitTooSmall)
         );
     }
 }

@@ -38,7 +38,7 @@ When evidence becomes stale or a regression is found, move the item back to
 | Foundation | Reproducible repository and engineering controls | `IN PROGRESS` | Pinned workspace, executable architecture/docs/test gates, Stage 0 harness, CI and governance artifacts | Default-branch CI evidence, policy review, CI health baseline |
 | 0 | Validate the problem and competitor baselines | `IN PROGRESS` | Manifests and retained-result integrity checks pass; local harness tests pass | Five interviews, reference server pinning, executable baselines, raw runs |
 | 1 | Prove the carrier-independent session state model | `IN PROGRESS` | Deterministic tracer, exhaustive receive traces, and a 10,000-seed transition campaign retained by CI | ADR-0002 maintainer review |
-| 2 | Deliver a QUIC end-to-end slice | `NOT STARTED` | None | Real client-to-server stream and datagram flow |
+| 2 | Deliver a QUIC end-to-end slice | `IN PROGRESS` | QUIC stream relay, admission composition, bounded configuration, and redacted relay events | Live QUIC workload and datagram evidence |
 | 3 | Preserve streams across QUIC/TLS transitions | `NOT STARTED` | None | 10,000 correct fault trials and transition budgets |
 | 4 | Add Forest Native service coexistence | `NOT STARTED` | Threat-model proposal only | Differential probes and independent deployments |
 | 5 | Publish an interoperable protocol preview | `NOT STARTED` | No wire format is defined | Version 0 draft, vectors, two codec consumers, security review |
@@ -160,12 +160,12 @@ flow.
 |---|---|---|---|
 | S2-01 | Maintained QUIC/TLS library selected and threat-reviewed | `DONE` | [ADR-0004](adr/0004-quic-carrier.md) records the Quinn 0.11.11 pin, threat review, version policy, and invalidation triggers |
 | S2-02 | `carrier-quic` behind the narrow carrier contract | `PARTIAL` | [`velum-carrier-quic`](../crates/velum-carrier-quic) maps QUIC streams and datagrams behind `velum-carrier-api`; live client/server contract tests remain part of S2-03 |
-| S2-03 | Minimal server and selected local adapter | `PARTIAL` | [`velum-adapter-connect`](../crates/velum-adapter-connect) supplies the selected IP-only CONNECT parser and [`velum-server`](../crates/velum-server) supplies admission controls; authenticated QUIC listener and allowed-target relay remain |
-| S2-04 | QUIC streams for reliable flows | `TODO` | SSH, HTTP, and WebSocket workloads pass |
-| S2-05 | QUIC datagrams with explicit MTU and oversize behavior | `TODO` | DNS-like and real-time UDP workloads pass |
-| S2-06 | Authentication, destination deny-by-default policy, and quotas | `PARTIAL` | [`velum-server`](../crates/velum-server) has constant-time configured-secret authentication, exact deny-by-default destination allowlists, and per-principal in-memory quotas; listener integration and abuse tests remain |
-| S2-07 | Stable configuration schema and redacted telemetry vocabulary | `TODO` | Schema compatibility and no-secret logging tests pass |
-| S2-08 | Graceful shutdown, overload shedding, and resource limits | `TODO` | Fault and load tests show bounded impact |
+| S2-03 | Minimal server and selected local adapter | `PARTIAL` | [`velum-adapter-connect`](../crates/velum-adapter-connect) supplies the selected IP-only CONNECT parser; [`velum-node`](../apps/velum-node) composes exact-target admission with a QUIC stream relay. Certificate provisioning and a live listener remain |
+| S2-04 | QUIC streams for reliable flows | `PARTIAL` | [`velum-node`](../apps/velum-node) forwards an authenticated QUIC bidirectional stream to an allowed TCP target and closes all quota leases on every return path; SSH, HTTP, and WebSocket workload evidence remains |
+| S2-05 | QUIC datagrams with explicit MTU and oversize behavior | `PARTIAL` | [`velum-carrier-quic`](../crates/velum-carrier-quic) discovers the QUIC DATAGRAM maximum and rejects oversize payloads; DNS-like and real-time UDP live workload evidence remains |
+| S2-06 | Authentication, destination deny-by-default policy, and quotas | `PARTIAL` | [`velum-server`](../crates/velum-server) provides constant-time configured-secret authentication, exact deny-by-default destination allowlists, and per-principal in-memory quotas; [`velum-node`](../apps/velum-node) invokes them before connecting a target. Abuse-load evidence remains |
+| S2-07 | Stable configuration schema and redacted telemetry vocabulary | `PARTIAL` | [`QuicRelayConfig`](../apps/velum-node/src/lib.rs) validates schema version and bounded controls; [`QuicRelayEvent`](../crates/velum-telemetry/src/lib.rs) contains only lifecycle classes. Compatibility and export tests remain |
+| S2-08 | Graceful shutdown, overload shedding, and resource limits | `PARTIAL` | The relay bounds control records, target connection time, and admission quotas, and releases leases after all relay outcomes. Listener shutdown and load evidence remain |
 | S2-09 | Comparison against Hysteria 2 and direct QUIC | `TODO` | Stage 0 matrix results retained |
 | S2-10 | Normal-path overhead and overload budgets calibrated | `TODO` | Q-003 and Q-004 evidence retained |
 
