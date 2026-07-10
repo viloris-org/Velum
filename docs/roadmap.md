@@ -107,7 +107,7 @@ honest competitor baselines before defining a wire protocol.
 | S0-08 | Raw runs execute across the failure matrix | `TODO` | Immutable result directories following [`results/README.md`](../experiments/stage0/results/README.md) pass `node experiments/stage0/results/validate.mjs` |
 | S0-09 | Repeated trials establish variance and honest baseline comparisons | `TODO` | Sample counts, failures, environment, and raw artifacts retained |
 | S0-10 | Evidence ledger updated from reviewed interviews and measurements | `TODO` | [`evidence-ledger.md`](evidence-ledger.md) links retained evidence |
-| S0-11 | First adapter decision: SOCKS, CONNECT, or TUN | `TODO` | Accepted or revised ADR with operator evidence |
+| S0-11 | First adapter decision: SOCKS, CONNECT, or TUN | `PARTIAL` | [ADR-0006](adr/0006-stage2-connect-adapter.md) selects experimental IP-only CONNECT; operator evidence remains required before a production commitment |
 | S0-12 | ADR-0001 accepted, rejected, or superseded | `TODO` | Decision status and evidence are recorded |
 
 ### Exit Gate
@@ -158,12 +158,12 @@ flow.
 
 | ID | Deliverable | Status | Evidence / completion check |
 |---|---|---|---|
-| S2-01 | Maintained QUIC/TLS library selected and threat-reviewed | `TODO` | ADR records alternatives, version policy, and invalidation trigger |
-| S2-02 | `carrier-quic` behind the narrow carrier contract | `TODO` | Dependency and contract tests pass |
-| S2-03 | Minimal server and selected local adapter | `TODO` | End-to-end reliable stream reaches an allowed target |
+| S2-01 | Maintained QUIC/TLS library selected and threat-reviewed | `DONE` | [ADR-0004](adr/0004-quic-carrier.md) records the Quinn 0.11.11 pin, threat review, version policy, and invalidation triggers |
+| S2-02 | `carrier-quic` behind the narrow carrier contract | `PARTIAL` | [`velum-carrier-quic`](../crates/velum-carrier-quic) maps QUIC streams and datagrams behind `velum-carrier-api`; live client/server contract tests remain part of S2-03 |
+| S2-03 | Minimal server and selected local adapter | `PARTIAL` | [`velum-adapter-connect`](../crates/velum-adapter-connect) supplies the selected IP-only CONNECT parser and [`velum-server`](../crates/velum-server) supplies admission controls; authenticated QUIC listener and allowed-target relay remain |
 | S2-04 | QUIC streams for reliable flows | `TODO` | SSH, HTTP, and WebSocket workloads pass |
 | S2-05 | QUIC datagrams with explicit MTU and oversize behavior | `TODO` | DNS-like and real-time UDP workloads pass |
-| S2-06 | Authentication, destination deny-by-default policy, and quotas | `TODO` | Security and abuse tests pass |
+| S2-06 | Authentication, destination deny-by-default policy, and quotas | `PARTIAL` | [`velum-server`](../crates/velum-server) has constant-time configured-secret authentication, exact deny-by-default destination allowlists, and per-principal in-memory quotas; listener integration and abuse tests remain |
 | S2-07 | Stable configuration schema and redacted telemetry vocabulary | `TODO` | Schema compatibility and no-secret logging tests pass |
 | S2-08 | Graceful shutdown, overload shedding, and resource limits | `TODO` | Fault and load tests show bounded impact |
 | S2-09 | Comparison against Hysteria 2 and direct QUIC | `TODO` | Stage 0 matrix results retained |

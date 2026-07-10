@@ -66,6 +66,15 @@ modules:
     risk: critical
     unsafe_allowed: false
 
+  server:
+    paths: ["crates/velum-server/**"]
+    owner: server-maintainers
+    may_depend_on: [session, telemetry]
+    public_api: ["crates/velum-server/src/lib.rs"]
+    owns: [principal-authentication, destination-authorization, principal-quotas]
+    risk: critical
+    unsafe_allowed: false
+
   policy:
     paths: ["crates/velum-policy/**"]
     owner: transport-maintainers
@@ -133,6 +142,8 @@ forbidden_dependencies:
     to: [protocol, crypto, session, forest, carrier-quic, carrier-tls]
   - from: telemetry
     to: [protocol, crypto, carrier-api, session, policy, forest]
+  - from: server
+    to: [policy, forest, carrier-quic, carrier-tls]
 
 change_classes:
   routine:

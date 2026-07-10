@@ -36,6 +36,9 @@ questions. Proposed ADRs are not final protocol commitments.
 - [ADR-0001: Product position](adr/0001-product-position.md)
 - [ADR-0002: Multi-carrier sessions](adr/0002-multi-carrier-sessions.md)
 - [ADR-0003: Forest Native](adr/0003-forest-native.md)
+- [ADR-0004: QUIC carrier library](adr/0004-quic-carrier.md)
+- [ADR-0005: Stage 2 server admission](adr/0005-stage2-server-admission.md)
+- [ADR-0006: Stage 2 CONNECT adapter](adr/0006-stage2-connect-adapter.md)
 
 ## Document Status
 
