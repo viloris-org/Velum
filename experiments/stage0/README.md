@@ -9,7 +9,8 @@ does not define the Velum wire protocol or count as evidence by itself.
 - `manifests/workloads.json` defines the five required workload classes.
 - `manifests/baselines.json` records competitor selection and version pins.
 - `interviews/README.md` defines the operator interview record.
-- `results/README.md` defines the retained raw-result layout.
+- `results/README.md` defines the retained raw-result layout and its executable
+  integrity checks.
 - `harness/README.md` documents the dependency-free workload generator.
 - `validate.mjs` checks manifest structure, identifiers, and cross-references.
 
@@ -26,6 +27,12 @@ have an immutable version or revision:
 
 ```bash
 node experiments/stage0/validate.mjs --ready
+```
+
+Validate retained result structure, trial summaries, and checksums with:
+
+```bash
+node experiments/stage0/results/validate.mjs
 ```
 
 The initial manifests deliberately fail `--ready`. Baseline entries remain

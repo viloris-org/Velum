@@ -36,7 +36,7 @@ When evidence becomes stale or a regression is found, move the item back to
 | Stage | Outcome | Status | Completed evidence | Next gate |
 |---|---|---|---|---|
 | Foundation | Reproducible repository and engineering controls | `IN PROGRESS` | Pinned workspace, executable architecture/docs/test gates, Stage 0 harness, CI and governance artifacts | Default-branch CI evidence, policy review, CI health baseline |
-| 0 | Validate the problem and competitor baselines | `IN PROGRESS` | Manifests structurally valid; local harness tests pass | Five interviews, reference server pinning, executable baselines, raw runs |
+| 0 | Validate the problem and competitor baselines | `IN PROGRESS` | Manifests and retained-result integrity checks pass; local harness tests pass | Five interviews, reference server pinning, executable baselines, raw runs |
 | 1 | Prove the carrier-independent session state model | `NOT STARTED` | Proposed architecture and requirements only | Deterministic in-process tracer |
 | 2 | Deliver a QUIC end-to-end slice | `NOT STARTED` | None | Real client-to-server stream and datagram flow |
 | 3 | Preserve streams across QUIC/TLS transitions | `NOT STARTED` | None | 10,000 correct fault trials and transition budgets |
@@ -104,7 +104,7 @@ honest competitor baselines before defining a wire protocol.
 | S0-05 | At least five operator interviews | `TODO` | Five redacted records under `experiments/stage0/interviews/` |
 | S0-06 | At least three operators confirm material reconnect or manual switching pain | `TODO` | Three interview records classified `yes` |
 | S0-07 | Every baseline builds and covers its declared workloads | `TODO` | `node experiments/stage0/validate.mjs --ready` passes plus retained build metadata |
-| S0-08 | Raw runs execute across the failure matrix | `TODO` | Immutable result directories following [`results/README.md`](../experiments/stage0/results/README.md) |
+| S0-08 | Raw runs execute across the failure matrix | `TODO` | Immutable result directories following [`results/README.md`](../experiments/stage0/results/README.md) pass `node experiments/stage0/results/validate.mjs` |
 | S0-09 | Repeated trials establish variance and honest baseline comparisons | `TODO` | Sample counts, failures, environment, and raw artifacts retained |
 | S0-10 | Evidence ledger updated from reviewed interviews and measurements | `TODO` | [`evidence-ledger.md`](evidence-ledger.md) links retained evidence |
 | S0-11 | First adapter decision: SOCKS, CONNECT, or TUN | `TODO` | Accepted or revised ADR with operator evidence |

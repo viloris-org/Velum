@@ -10,6 +10,12 @@ pub fn test_all(root: &Path) -> Result<(), String> {
         "node",
         &["experiments/stage0/harness/harness.test.mjs"],
     )?;
+    run(
+        root,
+        "node",
+        &["experiments/stage0/results/validator.test.mjs"],
+    )?;
+    run(root, "node", &["experiments/stage0/results/validate.mjs"])?;
     run(root, "cargo", &["fmt", "--all", "--check"])?;
     run(
         root,
