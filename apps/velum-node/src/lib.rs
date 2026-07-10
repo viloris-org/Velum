@@ -14,12 +14,17 @@ use velum_telemetry::QuicRelayEvent;
 const MAX_SECRET_BYTES: usize = 128;
 const HEADER_BYTES: usize = 4;
 
+mod listener;
+
+pub use listener::{bind_quic_listener, serve_quic_listener};
+
 /// Versioned, application-owned configuration for the experimental QUIC
 /// listener. Secrets and certificates are supplied out of band.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct QuicRelayConfig {
     pub schema_version: u16,
     pub connect_timeout: Duration,
+    pub shutdown_timeout: Duration,
     pub max_control_bytes: usize,
 }
 
@@ -28,6 +33,7 @@ impl Default for QuicRelayConfig {
         Self {
             schema_version: 1,
             connect_timeout: Duration::from_secs(5),
+            shutdown_timeout: Duration::from_secs(5),
             max_control_bytes: MAX_SECRET_BYTES + 64,
         }
     }
@@ -37,6 +43,7 @@ impl Default for QuicRelayConfig {
 pub enum ConfigError {
     UnsupportedSchema,
     ZeroConnectTimeout,
+    ZeroShutdownTimeout,
     ControlLimitTooSmall,
 }
 
@@ -47,6 +54,9 @@ impl QuicRelayConfig {
         }
         if self.connect_timeout.is_zero() {
             return Err(ConfigError::ZeroConnectTimeout);
+        }
+        if self.shutdown_timeout.is_zero() {
+            return Err(ConfigError::ZeroShutdownTimeout);
         }
         if self.max_control_bytes < HEADER_BYTES + 1 + "[::1]:65535".len() {
             return Err(ConfigError::ControlLimitTooSmall);
@@ -68,6 +78,7 @@ impl RelayObserver for NoopRelayObserver {
 }
 
 /// Shared process-local state for a single admitted QUIC connection.
+#[derive(Clone)]
 pub struct RelayAdmission {
     pub authenticator: Arc<Authenticator>,
     pub destinations: Arc<DestinationPolicy>,
@@ -325,6 +336,14 @@ mod tests {
             }
             .validate(),
             Err(ConfigError::ControlLimitTooSmall)
+        );
+        assert_eq!(
+            QuicRelayConfig {
+                shutdown_timeout: Duration::ZERO,
+                ..QuicRelayConfig::default()
+            }
+            .validate(),
+            Err(ConfigError::ZeroShutdownTimeout)
         );
     }
 }

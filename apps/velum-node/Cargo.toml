@@ -14,3 +14,7 @@ velum-telemetry = { version = "0.0.0", path = "../../crates/velum-telemetry" }
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+rcgen = "=0.14.7"
+rustls = { version = "=0.23.41", default-features = false, features = ["ring"] }

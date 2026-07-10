@@ -4,9 +4,10 @@
 //! encoding and authentication remain future protocol and server work.
 
 use velum_carrier_api::{
-    Carrier, CarrierCapabilities, CarrierError, CarrierHealth, CarrierId, CarrierKind,
-    StreamRequest,
+    Carrier, CarrierCapabilities, CarrierError, CarrierHealth, CarrierKind, StreamRequest,
 };
+
+pub use velum_carrier_api::CarrierId;
 
 /// One bidirectional QUIC stream opened for a session-owned logical flow.
 pub struct QuicStream {
@@ -53,6 +54,16 @@ pub struct QuicCarrier {
 impl QuicCarrier {
     pub fn new(id: CarrierId, connection: quinn::Connection) -> Self {
         Self { id, connection }
+    }
+
+    /// Accepts an incoming bidirectional stream without exposing Quinn to the
+    /// application listener's carrier dispatch loop.
+    pub async fn accept_stream(&self) -> Result<QuicStream, CarrierError> {
+        self.connection
+            .accept_bi()
+            .await
+            .map(|(send, receive)| QuicStream { send, receive })
+            .map_err(|_| CarrierError::Closed)
     }
 
     fn datagram_limit(&self) -> Result<usize, CarrierError> {
@@ -104,11 +115,7 @@ impl Carrier for QuicCarrier {
     }
 
     async fn accept_reliable_stream(&self) -> Result<Self::ReliableStream, CarrierError> {
-        self.connection
-            .accept_bi()
-            .await
-            .map(|(send, receive)| QuicStream { send, receive })
-            .map_err(|_| CarrierError::Closed)
+        self.accept_stream().await
     }
 
     async fn send_datagram(&self, bytes: &[u8]) -> Result<(), CarrierError> {
