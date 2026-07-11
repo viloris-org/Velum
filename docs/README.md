@@ -19,6 +19,8 @@ questions. Proposed ADRs are not final protocol commitments.
 
 - [Architecture](architecture.md): system boundaries, protocol layers, runtime
   behavior, failure handling, and ownership.
+- [`velum` research CLI](velum-node.md): experimental QUIC relay runtime,
+  configuration boundary, and checksum-verified snapshot installation.
 - [Forest Native](forest-native.md): camouflage philosophy, threat model, and
   deployment requirements.
 - [Protocol requirements](protocol-requirements.md): delivery semantics,

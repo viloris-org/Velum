@@ -1,6 +1,9 @@
 # Release Policy
 
-Velum does not currently publish supported releases.
+Velum does not currently publish supported releases. Tags named `snapshot-*`
+may publish checksum-verified **research snapshots** of `velum`; they are
+explicitly pre-releases and create neither a support obligation nor a wire
+compatibility promise.
 
 - Foundation through Stage 4 artifacts are research snapshots and create no
   wire compatibility promise.
@@ -15,4 +18,3 @@ Velum does not currently publish supported releases.
 Release approval belongs to release-maintainers. The first release procedure
 must include signing, provenance, reproducible-build verification, staged
 rollout, and tested rollback before this policy can claim those controls exist.
-

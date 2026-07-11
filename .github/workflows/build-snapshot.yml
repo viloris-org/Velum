@@ -1,0 +1,77 @@
+name: Build research snapshots
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ['snapshot-*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-snapshot-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x86_64
+            runner: ubuntu-latest
+          - platform: darwin-aarch64
+            runner: macos-14
+          - platform: darwin-x86_64
+            runner: macos-13
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Install pinned Rust toolchain
+        run: |
+          rustup toolchain install 1.97.0 --profile minimal
+          rustup override set 1.97.0
+      - name: Build velum
+        run: cargo build --locked --release -p velum-node --bin velum
+      - name: Package artifact
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp target/release/velum dist/velum
+          tar -C dist -czf "velum-${{ github.ref_name }}-${{ matrix.platform }}.tar.gz" velum
+          shasum -a 256 "velum-${{ github.ref_name }}-${{ matrix.platform }}.tar.gz" > "velum-${{ github.ref_name }}-${{ matrix.platform }}.tar.gz.sha256"
+      - name: Upload packaged binary
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: velum-${{ matrix.platform }}
+          path: |
+            velum-${{ github.ref_name }}-${{ matrix.platform }}.tar.gz
+            velum-${{ github.ref_name }}-${{ matrix.platform }}.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/snapshot-')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download packaged binaries
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Create checksum manifest
+        run: |
+          cd artifacts
+          cat *.sha256 > SHA256SUMS
+      - name: Publish research snapshot
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" artifacts/*.tar.gz artifacts/SHA256SUMS --prerelease --title "Research snapshot $GITHUB_REF_NAME" --notes "Experimental research snapshot. Not a supported release and not a stable protocol commitment."
