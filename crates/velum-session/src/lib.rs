@@ -12,8 +12,12 @@ mod campaign;
 use std::collections::{BTreeMap, VecDeque};
 
 use transition::{EpochValidity, TransitionState};
-use velum_protocol::{Epoch, FlowId, Sequence};
-use velum_telemetry::SessionEvent;
+use velum_carrier_api::{CarrierId, CarrierKind};
+use velum_crypto::{
+    AttachmentAuthenticationError, AttachmentAuthenticator, AttachmentProof, ReplayWindow,
+};
+use velum_protocol::{Epoch, FlowId, Sequence, SessionId, VersionRange};
+use velum_telemetry::{CarrierClass, SessionEvent, TransitionReason, TransitionRejection};
 
 pub use simulator::{CarrierDisposition, InMemoryCarrier};
 
@@ -53,6 +57,26 @@ pub enum TraceError {
     FutureEpoch,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CarrierAttachment {
+    pub carrier: CarrierId,
+    pub epoch: Epoch,
+    pub proof: AttachmentProof,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AttachmentError {
+    Authentication(AttachmentAuthenticationError),
+    StaleEpoch,
+    FutureEpoch,
+    Replay,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TransitionCompatibilityError {
+    NoSharedVersion,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ReceiveResult {
     Delivered(Vec<u8>),
@@ -79,6 +103,7 @@ struct PendingSegment {
 #[derive(Debug)]
 pub struct SessionTracer {
     transition: TransitionState,
+    attachment_replay: ReplayWindow,
     tick: u64,
     next_flow: u64,
     limits: FlowLimits,
@@ -95,6 +120,7 @@ impl SessionTracer {
         assert!(limits.max_events > 0);
         Self {
             transition: TransitionState::new(epoch),
+            attachment_replay: ReplayWindow::default(),
             tick: 0,
             next_flow: 0,
             limits,
@@ -238,6 +264,24 @@ impl SessionTracer {
             .ok_or(TraceError::UnknownFlow)
     }
 
+    /// Reissues every unacknowledged segment on the current epoch after a
+    /// carrier attachment succeeds. Sequence numbers remain session-owned;
+    /// receivers therefore classify already delivered bytes as duplicates.
+    pub fn resume_unacknowledged(&self, flow_id: FlowId) -> Result<Vec<Segment>, TraceError> {
+        self.flows
+            .get(&flow_id)
+            .map(|flow| {
+                flow.pending
+                    .iter()
+                    .map(|pending| Segment {
+                        epoch: self.epoch(),
+                        ..pending.segment.clone()
+                    })
+                    .collect()
+            })
+            .ok_or(TraceError::UnknownFlow)
+    }
+
     /// Advances deterministic time and terminates flows whose oldest
     /// unacknowledged segment exceeded its configured lifetime.
     pub fn advance_time(&mut self, ticks: u64) -> Vec<FlowId> {
@@ -275,9 +319,68 @@ impl SessionTracer {
         self.transition.advance()
     }
 
+    /// Records an explainable carrier change without exporting transport
+    /// addresses, error text, credentials, or payload-derived data.
+    pub fn begin_explained_transition(
+        &mut self,
+        from: CarrierKind,
+        to: CarrierKind,
+        reason: TransitionReason,
+    ) -> Epoch {
+        self.record_event(SessionEvent::TransitionStarted {
+            from: carrier_class(from),
+            to: carrier_class(to),
+            reason,
+        });
+        self.begin_transition()
+    }
+
+    pub fn negotiate_transition_version(
+        &mut self,
+        local: VersionRange,
+        peer: VersionRange,
+    ) -> Result<u16, TransitionCompatibilityError> {
+        local.negotiate(peer).ok_or_else(|| {
+            self.record_event(SessionEvent::TransitionRejected {
+                reason: TransitionRejection::IncompatibleVersion,
+            });
+            TransitionCompatibilityError::NoSharedVersion
+        })
+    }
+
+    /// Accepts a new carrier only when its proof binds it to this session's
+    /// current epoch and that epoch has not already been attached.
+    pub fn authenticate_carrier_attachment(
+        &mut self,
+        authenticator: &AttachmentAuthenticator,
+        session: SessionId,
+        attachment: CarrierAttachment,
+    ) -> Result<(), AttachmentError> {
+        match self.transition.validate(attachment.epoch) {
+            EpochValidity::Current => {}
+            EpochValidity::Retiring | EpochValidity::Stale => {
+                return Err(AttachmentError::StaleEpoch);
+            }
+            EpochValidity::Future => return Err(AttachmentError::FutureEpoch),
+        }
+        authenticator
+            .verify(
+                session,
+                attachment.carrier.0,
+                attachment.epoch,
+                attachment.proof,
+            )
+            .map_err(AttachmentError::Authentication)?;
+        if !self.attachment_replay.accept(attachment.epoch) {
+            return Err(AttachmentError::Replay);
+        }
+        Ok(())
+    }
+
     /// Closes the retiring epoch's replay window after its carrier detaches.
     pub fn complete_transition(&mut self) {
         self.transition.retire_previous();
+        self.record_event(SessionEvent::TransitionCompleted);
     }
 
     fn require_valid_epoch(&self, epoch: Epoch) -> Result<(), TraceError> {
@@ -296,6 +399,13 @@ impl SessionTracer {
     }
 }
 
+fn carrier_class(kind: CarrierKind) -> CarrierClass {
+    match kind {
+        CarrierKind::Quic => CarrierClass::Quic,
+        CarrierKind::Tls => CarrierClass::Tls,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -311,6 +421,67 @@ mod tests {
                 max_events: 2,
             },
         )
+    }
+
+    fn attachment(
+        epoch: Epoch,
+        carrier: CarrierId,
+    ) -> (AttachmentAuthenticator, SessionId, CarrierAttachment) {
+        let authenticator = AttachmentAuthenticator::new(b"attachment secret").expect("secret");
+        let session = SessionId([5; 16]);
+        let attachment = CarrierAttachment {
+            carrier,
+            epoch,
+            proof: authenticator.prove(session, carrier.0, epoch),
+        };
+        (authenticator, session, attachment)
+    }
+
+    #[test]
+    fn carrier_attachments_require_a_fresh_authenticated_current_epoch() {
+        let mut session = tracer();
+        let (authenticator, session_id, first) = attachment(Epoch(0), CarrierId(1));
+        assert_eq!(
+            session.authenticate_carrier_attachment(&authenticator, session_id, first),
+            Ok(())
+        );
+        assert_eq!(
+            session.authenticate_carrier_attachment(&authenticator, session_id, first),
+            Err(AttachmentError::Replay)
+        );
+
+        assert_eq!(session.begin_transition(), Epoch(1));
+        let (_, _, second) = attachment(Epoch(1), CarrierId(2));
+        assert_eq!(
+            session.authenticate_carrier_attachment(&authenticator, session_id, second),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn carrier_attachments_reject_stale_future_and_forged_proofs() {
+        let mut session = tracer();
+        let (authenticator, session_id, first) = attachment(Epoch(0), CarrierId(1));
+        let forged = CarrierAttachment {
+            carrier: CarrierId(2),
+            ..first
+        };
+        assert!(matches!(
+            session.authenticate_carrier_attachment(&authenticator, session_id, forged),
+            Err(AttachmentError::Authentication(
+                AttachmentAuthenticationError::InvalidProof
+            ))
+        ));
+        assert_eq!(session.begin_transition(), Epoch(1));
+        assert_eq!(
+            session.authenticate_carrier_attachment(&authenticator, session_id, first),
+            Err(AttachmentError::StaleEpoch)
+        );
+        let (_, _, future) = attachment(Epoch(2), CarrierId(3));
+        assert_eq!(
+            session.authenticate_carrier_attachment(&authenticator, session_id, future),
+            Err(AttachmentError::FutureEpoch)
+        );
     }
 
     #[test]
@@ -467,6 +638,80 @@ mod tests {
                 through: Sequence(0),
             }),
             Err(TraceError::StaleEpoch)
+        );
+    }
+
+    #[test]
+    fn resume_reissues_only_unacknowledged_segments_on_current_epoch() {
+        let mut session = tracer();
+        let flow = session.open_reliable_flow().expect("open flow");
+        session.send(flow, vec![1]).expect("first");
+        session.send(flow, vec![2]).expect("second");
+        session
+            .acknowledge(Acknowledgement {
+                flow_id: flow,
+                epoch: Epoch(0),
+                through: Sequence(0),
+            })
+            .expect("acknowledge first");
+        assert_eq!(session.begin_transition(), Epoch(1));
+        assert_eq!(
+            session.resume_unacknowledged(flow).expect("resume"),
+            vec![Segment {
+                flow_id: flow,
+                epoch: Epoch(1),
+                sequence: Sequence(1),
+                bytes: vec![2],
+            }]
+        );
+    }
+
+    #[test]
+    fn incompatible_transition_versions_are_rejected_and_explained() {
+        let mut session = tracer();
+        assert_eq!(
+            session.negotiate_transition_version(
+                VersionRange {
+                    minimum: 0,
+                    maximum: 0
+                },
+                VersionRange {
+                    minimum: 1,
+                    maximum: 1
+                },
+            ),
+            Err(TransitionCompatibilityError::NoSharedVersion)
+        );
+        assert_eq!(
+            session.events(),
+            &[SessionEvent::TransitionRejected {
+                reason: TransitionRejection::IncompatibleVersion,
+            }]
+        );
+    }
+
+    #[test]
+    fn transition_telemetry_has_only_structured_classes() {
+        let mut session = tracer();
+        assert_eq!(
+            session.begin_explained_transition(
+                CarrierKind::Quic,
+                CarrierKind::Tls,
+                TransitionReason::PrimaryUnhealthy,
+            ),
+            Epoch(1)
+        );
+        session.complete_transition();
+        assert_eq!(
+            session.events(),
+            &[
+                SessionEvent::TransitionStarted {
+                    from: CarrierClass::Quic,
+                    to: CarrierClass::Tls,
+                    reason: TransitionReason::PrimaryUnhealthy,
+                },
+                SessionEvent::TransitionCompleted,
+            ]
         );
     }
 

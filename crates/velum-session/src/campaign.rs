@@ -96,9 +96,13 @@ fn run_trial(seed: u64) -> u64 {
         );
     }
 
-    // A recovered carrier retransmits the session-owned pending queue in order.
+    // A recovered carrier reissues session-owned unacknowledged bytes using
+    // the current epoch while retaining their original logical sequences.
     let mut recovery = InMemoryCarrier::new();
-    for segment in sender.pending(sender_flow).expect("known flow") {
+    for segment in sender
+        .resume_unacknowledged(sender_flow)
+        .expect("known flow")
+    {
         recovery.transmit(segment, CarrierDisposition::Deliver);
     }
     deliver(&mut receiver, recovery.advance(0), &mut delivered);

@@ -39,7 +39,7 @@ When evidence becomes stale or a regression is found, move the item back to
 | 0 | Validate the problem and competitor baselines | `IN PROGRESS` | Manifests and retained-result integrity checks pass; local harness tests pass | Five interviews, reference server pinning, executable baselines, raw runs |
 | 1 | Prove the carrier-independent session state model | `IN PROGRESS` | Deterministic tracer, exhaustive receive traces, and a 10,000-seed transition campaign retained by CI | ADR-0002 maintainer review |
 | 2 | Deliver a QUIC end-to-end slice | `IN PROGRESS` | QUIC stream relay, admission composition, bounded configuration, and redacted relay events | Live QUIC workload and datagram evidence |
-| 3 | Preserve streams across QUIC/TLS transitions | `NOT STARTED` | None | 10,000 correct fault trials and transition budgets |
+| 3 | Preserve streams across QUIC/TLS transitions | `IN PROGRESS` | TLS 1.3/TCP carrier contract and loopback integration test | 10,000 correct fault trials and transition budgets |
 | 4 | Add Forest Native service coexistence | `NOT STARTED` | Threat-model proposal only | Differential probes and independent deployments |
 | 5 | Publish an interoperable protocol preview | `NOT STARTED` | No wire format is defined | Version 0 draft, vectors, two codec consumers, security review |
 | 6 | Operate a production candidate | `NOT STARTED` | None | Readiness review and rehearsed rollback |
@@ -186,16 +186,16 @@ without changing logical state ownership.
 
 | ID | Deliverable | Status | Evidence / completion check |
 |---|---|---|---|
-| S3-01 | `carrier-tls` using TLS 1.3 over TCP | `TODO` | Carrier contract and integration tests pass |
-| S3-02 | Authenticated carrier attachment with fresh session epochs | `TODO` | Replay and stale-epoch tests pass |
-| S3-03 | Cold fallback, optional warm fallback, and recovery probing | `TODO` | Policy tests cover cost and recovery behavior |
-| S3-04 | Transition hysteresis and false-transition control | `TODO` | Loss, jitter, rate-limit, and recovery matrix retained |
-| S3-05 | Reliable-stream resume from logical acknowledgement cursors | `TODO` | Zero missing or duplicate bytes across 10,000 deterministic trials |
-| S3-06 | Honest UDP semantics over TLS | `TODO` | No API or telemetry labels reliable encapsulation as datagram-equivalent |
-| S3-07 | Simultaneous failure, late packets, duplicate controls, server restart, and flow-control exhaustion | `TODO` | Deterministic fault tests pass |
-| S3-08 | Idle bytes, memory, sockets, and mobile wakeup budgets | `TODO` | Warm and cold policy measurements retained |
-| S3-09 | Structured explanation for every transition | `TODO` | Telemetry assertions and operator exercise pass |
-| S3-10 | Upgrade, downgrade, and mixed-version transition behavior | `TODO` | Compatibility matrix passes |
+| S3-01 | `carrier-tls` using TLS 1.3 over TCP | `DONE` | [`velum-carrier-tls`](../crates/velum-carrier-tls) maps one TLS 1.3/TCP connection to one reliable stream, rejects datagrams, and proves a certificate-validated loopback exchange with `cargo test -p velum-carrier-tls` |
+| S3-02 | Authenticated carrier attachment with fresh session epochs | `DONE` | [`velum-crypto`](../crates/velum-crypto) binds an HMAC-SHA-256 proof to session, carrier, and epoch; [`velum-session`](../crates/velum-session) accepts only one authenticated current-epoch attachment and rejects forged, replayed, stale, and future attachments with `cargo test -p velum-crypto -p velum-session` |
+| S3-03 | Cold fallback, optional warm fallback, and recovery probing | `PARTIAL` | [`velum-policy`](../crates/velum-policy) supplies deterministic cold/warm fallback, recovery, and rate-limit decisions; live carrier probes remain |
+| S3-04 | Transition hysteresis and false-transition control | `PARTIAL` | Policy tests cover failure confirmation, recovery confirmation, and rate limiting; retained loss/jitter measurements remain |
+| S3-05 | Reliable-stream resume from logical acknowledgement cursors | `PARTIAL` | [`velum-session`](../crates/velum-session/src/lib.rs) reissues only pending sequences under the new epoch; its 10,000-seed campaign checks byte-exact delivery; live transition evidence remains |
+| S3-06 | Honest UDP semantics over TLS | `PARTIAL` | [`fallback_supports`](../crates/velum-policy/src/lib.rs) permits only streams over TLS fallback; application wiring and telemetry export review remain |
+| S3-07 | Simultaneous failure, late packets, duplicate controls, server restart, and flow-control exhaustion | `PARTIAL` | Existing deterministic tracer rejects stale epochs and duplicates and bounds pending queues; server-restart and live carrier fault tests remain |
+| S3-08 | Idle bytes, memory, sockets, and mobile wakeup budgets | `PARTIAL` | Cold/warm fallback is explicit in policy and queue/socket ownership is bounded by the tracer; calibrated retained measurements remain |
+| S3-09 | Structured explanation for every transition | `PARTIAL` | [`velum-telemetry`](../crates/velum-telemetry/src/lib.rs) records redacted carrier classes and reasons; operator exercise and exporter assertions remain |
+| S3-10 | Upgrade, downgrade, and mixed-version transition behavior | `PARTIAL` | [`VersionRange`](../crates/velum-protocol/src/lib.rs) chooses the newest shared version and rejects disjoint peers; wire-level compatibility matrix remains |
 
 ### Exit Gate
 

@@ -79,6 +79,12 @@ black holes, recovery retransmission, and an epoch transition; each trial
 checks byte-exact application output. The campaign's retained aggregate is
 `4550704779471716960` for seeds `0..9999`, with a varied transition position.
 
+Stage 3 adds a typed carrier-attachment boundary. A proof binds a carrier ID,
+logical session ID, and current epoch; the session verifies it before consuming
+the epoch in a replay window. This remains an in-process API until the Stage 5
+wire-format decision, and does not make TLS transport authentication equivalent
+to logical-session authentication.
+
 Before this ADR can become `Accepted`, the named protocol maintainer must
 confirm that the one-epoch retirement window and terminal timeout semantics are
 the intended Version 1 contract. The review must also confirm that this

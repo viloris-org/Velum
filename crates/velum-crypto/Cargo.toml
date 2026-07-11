@@ -6,6 +6,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+ring = "=0.17.14"
 velum-protocol = { version = "0.0.0", path = "../velum-protocol" }
 
 [lints]

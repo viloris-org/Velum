@@ -5,6 +5,7 @@ members = [
     "crates/velum-crypto",
     "crates/velum-carrier-api",
     "crates/velum-carrier-quic",
+    "crates/velum-carrier-tls",
     "crates/velum-server",
     "crates/velum-adapter-connect",
     "apps/velum-node",
