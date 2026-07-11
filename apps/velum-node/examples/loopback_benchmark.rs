@@ -8,8 +8,9 @@ use std::{error::Error, net::SocketAddr, sync::Arc, time::Instant};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpListener,
-    sync::{Mutex, oneshot},
+    sync::{Mutex, mpsc, oneshot},
 };
+use velum_node::admin::Control;
 use velum_node::{
     NoopRelayObserver, QuicRelayConfig, RelayAdmission, bind_quic_listener, encode_open,
     serve_quic_listener,
@@ -219,18 +220,23 @@ async fn start_server(
             let endpoint = bind_quic_listener("127.0.0.1:0".parse()?, server_config)?;
             let address = endpoint.local_addr()?;
             let (shutdown_sender, shutdown) = oneshot::channel();
+            let (controls, control_requests) = mpsc::channel(1);
+            tokio::spawn(async move {
+                let _ = shutdown.await;
+                let _ = controls.send(Control::Shutdown).await;
+            });
             let listener = tokio::spawn(async move {
                 serve_quic_listener(
                     endpoint,
                     admission(target_address),
                     QuicRelayConfig::default(),
                     Arc::new(NoopRelayObserver),
-                    async move {
-                        let _ = shutdown.await;
-                    },
+                    Arc::new(velum_node::admin::RuntimeStatus::default()),
+                    control_requests,
+                    || Err("benchmark listener does not support reload".into()),
                 )
-                .await;
-                Ok(())
+                .await
+                .map_err(|error| error.into())
             });
             Ok(BenchmarkServer {
                 address,

@@ -4,14 +4,19 @@
 //! deployment boundary. This module owns only accepting connections, dispatching
 //! their bidirectional streams, and bounded shutdown.
 
-use std::{future::Future, net::SocketAddr, sync::Arc};
+use std::{net::SocketAddr, sync::Arc};
 
-use tokio::{sync::Semaphore, task::JoinSet, time::timeout};
+use tokio::{
+    sync::{Semaphore, mpsc},
+    task::JoinSet,
+    time::timeout,
+};
 use velum_carrier_quic::{CarrierId, QuicCarrier};
 use velum_telemetry::QuicRelayEvent;
 
 use crate::{
-    ConnectionAdmission, QuicRelayConfig, RelayAdmission, RelayObserver, relay_quic_stream,
+    ConnectionAdmission, QuicRelayConfig, RelayAdmission, RelayObserver, admin::Control,
+    relay_quic_stream,
 };
 
 /// Binds a server endpoint using deployment-provided TLS and transport settings.
@@ -22,7 +27,7 @@ pub fn bind_quic_listener(
     quinn::Endpoint::server(server_config, address)
 }
 
-/// Serves incoming QUIC connections until `shutdown` resolves.
+/// Serves incoming QUIC connections until a drain or shutdown control arrives.
 ///
 /// Every accepted bidirectional stream runs independently, so a blocked target
 /// does not prevent the connection from presenting another flow. Endpoint close
@@ -33,19 +38,34 @@ pub async fn serve_quic_listener(
     admission: RelayAdmission,
     config: QuicRelayConfig,
     observer: Arc<dyn RelayObserver>,
-    shutdown: impl Future<Output = ()> + Send,
-) {
+    status: Arc<crate::admin::RuntimeStatus>,
+    mut controls: mpsc::Receiver<Control>,
+    reload_server_config: impl Fn() -> Result<quinn::ServerConfig, String>,
+) -> Result<(), String> {
     if config.validate().is_err() {
-        return;
+        return Err("invalid listener configuration".into());
     }
 
-    tokio::pin!(shutdown);
     let connection_slots = Arc::new(Semaphore::new(config.max_connections));
     let mut connections = JoinSet::new();
+    let mut draining = false;
     loop {
+        if draining && connections.is_empty() {
+            break;
+        }
         tokio::select! {
-            _ = &mut shutdown => break,
-            incoming = endpoint.accept() => match incoming {
+            control = controls.recv() => match control {
+                Some(Control::Reload) => {
+                    // A bad replacement must leave the admitted listener
+                    // running with its last known-good certificate.
+                    if let Ok(server_config) = reload_server_config() {
+                        endpoint.set_server_config(Some(server_config));
+                    }
+                }
+                Some(Control::Drain) => draining = true,
+                Some(Control::Shutdown) | None => break,
+            },
+            incoming = endpoint.accept(), if !draining => match incoming {
                 Some(incoming) => {
                     let Ok(slot) = Arc::clone(&connection_slots).try_acquire_owned() else {
                         observer.record(QuicRelayEvent::ConnectionRejected);
@@ -55,13 +75,16 @@ pub async fn serve_quic_listener(
                     let admission = admission.clone();
                     let config = config.clone();
                     let observer = Arc::clone(&observer);
+                    let status = Arc::clone(&status);
                     connections.spawn(async move {
                         let _slot = slot;
                         let Ok(connection) = incoming.await else {
                             return;
                         };
                         observer.record(QuicRelayEvent::ConnectionAccepted);
-                        serve_connection(connection, admission, config, observer).await;
+                        status.connection_opened();
+                        serve_connection(connection, admission, config, observer, Arc::clone(&status)).await;
+                        status.connection_closed();
                     });
                 }
                 None => break,
@@ -81,6 +104,7 @@ pub async fn serve_quic_listener(
         connections.abort_all();
         while connections.join_next().await.is_some() {}
     }
+    Ok(())
 }
 
 async fn serve_connection(
@@ -88,6 +112,7 @@ async fn serve_connection(
     admission: RelayAdmission,
     config: QuicRelayConfig,
     observer: Arc<dyn RelayObserver>,
+    status: Arc<crate::admin::RuntimeStatus>,
 ) {
     let carrier = QuicCarrier::new(CarrierId(0), connection);
     let connection_admission = ConnectionAdmission::default();
@@ -105,8 +130,10 @@ async fn serve_connection(
                     let connection_admission = connection_admission.clone();
                     let config = config.clone();
                     let observer = Arc::clone(&observer);
+                    let status = Arc::clone(&status);
                     flows.spawn(async move {
                         let _slot = slot;
+                        status.flow_opened();
                         let _ = relay_quic_stream(
                             stream,
                             &admission,
@@ -115,6 +142,7 @@ async fn serve_connection(
                             observer.as_ref(),
                         )
                         .await;
+                        status.flow_closed();
                     });
                 }
                 Err(_) => break,
@@ -176,9 +204,11 @@ mod tests {
         let certificate = rustls::pki_types::CertificateDer::from(certified.cert);
         let key =
             rustls::pki_types::PrivatePkcs8KeyDer::from(certified.signing_key.serialize_der());
-        let server_config =
-            quinn::ServerConfig::with_single_cert(vec![certificate.clone()], key.into())
-                .expect("server config");
+        let server_config = quinn::ServerConfig::with_single_cert(
+            vec![certificate.clone()],
+            key.clone_key().into(),
+        )
+        .expect("server config");
         let endpoint =
             match bind_quic_listener("127.0.0.1:0".parse().expect("address"), server_config) {
                 Ok(endpoint) => endpoint,
@@ -189,14 +219,21 @@ mod tests {
 
         let (accepted_sender, accepted) = oneshot::channel();
         let observer = Arc::new(AcceptedObserver(Mutex::new(Some(accepted_sender))));
-        let (shutdown_sender, shutdown) = oneshot::channel();
+        let (controls, control_requests) = mpsc::channel(1);
+        let reload_certificate = certificate.clone();
         let listener = tokio::spawn(serve_quic_listener(
             endpoint,
             test_admission(),
             QuicRelayConfig::default(),
             observer,
-            async move {
-                let _ = shutdown.await;
+            Arc::new(crate::admin::RuntimeStatus::default()),
+            control_requests,
+            move || {
+                quinn::ServerConfig::with_single_cert(
+                    vec![reload_certificate.clone()],
+                    key.clone_key().into(),
+                )
+                .map_err(|error| error.to_string())
             },
         ));
 
@@ -214,8 +251,14 @@ mod tests {
             .expect("connection");
         accepted.await.expect("accepted event");
 
-        shutdown_sender.send(()).expect("shutdown receiver");
-        listener.await.expect("listener task");
+        controls
+            .send(Control::Shutdown)
+            .await
+            .expect("shutdown receiver");
+        listener
+            .await
+            .expect("listener task")
+            .expect("listener result");
         connection.close(0_u32.into(), b"test complete");
         client.close(0_u32.into(), b"test complete");
     }

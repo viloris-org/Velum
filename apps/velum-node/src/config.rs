@@ -16,6 +16,7 @@ use velum_server::{
     AdmissionControl, Authenticator, DestinationPolicy, PrincipalCredential, PrincipalId,
     PrincipalQuota,
 };
+use x509_parser::parse_x509_certificate;
 
 use crate::{QuicRelayConfig, RelayAdmission};
 
@@ -30,6 +31,8 @@ pub struct Config {
     pub credentials: Vec<CredentialConfig>,
     pub allowed_targets: Vec<String>,
     pub limits: Limits,
+    #[serde(default)]
+    pub acme: Option<AcmeConfig>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -61,6 +64,18 @@ pub struct Limits {
     pub shutdown_timeout_secs: u64,
 }
 
+/// Non-secret ACME policy. DNS-provider credentials stay in the environment
+/// consumed by Lego and must never be written to this configuration file.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct AcmeConfig {
+    pub email: String,
+    pub domains: Vec<String>,
+    pub dns_provider: String,
+    pub directory_url: String,
+    pub state_dir: PathBuf,
+    pub renew_before_days: u16,
+}
+
 pub struct LoadedConfig {
     pub bind: SocketAddr,
     pub admin_socket: PathBuf,
@@ -80,7 +95,7 @@ impl Config {
                 private_key: base.join("key.pem"),
             },
             admin: AdminConfig {
-                socket: default_admin_socket(),
+                socket: default_admin_socket_for(path),
             },
             credentials: vec![CredentialConfig {
                 id: 1,
@@ -96,6 +111,7 @@ impl Config {
                 control_timeout_secs: 5,
                 shutdown_timeout_secs: 5,
             },
+            acme: None,
         }
     }
 }
@@ -115,6 +131,17 @@ pub fn default_admin_socket() -> PathBuf {
         .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state")))
         .unwrap_or_else(|| PathBuf::from("."))
         .join("velum/admin.sock")
+}
+
+pub fn default_admin_socket_for(config_path: &Path) -> PathBuf {
+    if config_path == default_config_path() {
+        default_admin_socket()
+    } else {
+        config_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join("admin.sock")
+    }
 }
 
 pub fn read(path: &Path) -> Result<Config, String> {
@@ -269,6 +296,21 @@ pub fn read_private_key(path: &Path) -> Result<PrivateKeyDer<'static>, String> {
         .map_err(|error| format!("cannot read private key {}: {error}", path.display()))?;
     PrivateKeyDer::from_pem_reader(BufReader::new(file))
         .map_err(|error| format!("cannot parse private key {}: {error}", path.display()))
+}
+
+pub fn certificate_expiry(path: &Path) -> Result<(String, i64), String> {
+    let certificate = read_certificates(path)?
+        .into_iter()
+        .next()
+        .ok_or("certificate chain is empty")?;
+    let (_, certificate) = parse_x509_certificate(certificate.as_ref())
+        .map_err(|error| format!("cannot parse X.509 certificate {}: {error}", path.display()))?;
+    let expires = certificate.validity().not_after;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|error| format!("system clock precedes Unix epoch: {error}"))?
+        .as_secs() as i64;
+    Ok((expires.to_string(), (expires.timestamp() - now) / 86_400))
 }
 
 fn read_secret(path: &Path) -> Result<Vec<u8>, String> {

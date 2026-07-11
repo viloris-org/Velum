@@ -21,6 +21,8 @@ questions. Proposed ADRs are not final protocol commitments.
   behavior, failure handling, and ownership.
 - [`velum` research CLI](velum-node.md): experimental QUIC relay runtime,
   configuration boundary, and checksum-verified snapshot installation.
+- [ACME operations](acme.md): external Lego DNS-01 issuance, renewal, and
+  certificate activation.
 - [Forest Native](forest-native.md): camouflage philosophy, threat model, and
   deployment requirements.
 - [Protocol requirements](protocol-requirements.md): delivery semantics,

@@ -2,8 +2,17 @@
 
 use std::{
     path::{Path, PathBuf},
-    time::Instant,
+    sync::{
+        Arc,
+        atomic::{AtomicU8, AtomicUsize, Ordering},
+    },
+    time::{Duration, Instant},
 };
+
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+const RUNNING: u8 = 0;
+const DRAINING: u8 = 1;
+const STOPPING: u8 = 2;
 
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -15,7 +24,54 @@ use tokio::{
 #[derive(Clone, Copy, Debug)]
 pub enum Control {
     Drain,
+    Reload,
     Shutdown,
+}
+
+#[derive(Default)]
+pub struct RuntimeStatus {
+    phase: AtomicU8,
+    connections: AtomicUsize,
+    flows: AtomicUsize,
+}
+
+impl RuntimeStatus {
+    pub fn connection_opened(&self) {
+        self.connections.fetch_add(1, Ordering::Relaxed);
+    }
+    pub fn connection_closed(&self) {
+        self.connections.fetch_sub(1, Ordering::Relaxed);
+    }
+    pub fn flow_opened(&self) {
+        self.flows.fetch_add(1, Ordering::Relaxed);
+    }
+    pub fn flow_closed(&self) {
+        self.flows.fetch_sub(1, Ordering::Relaxed);
+    }
+
+    fn set_phase(&self, phase: u8) {
+        self.phase.store(phase, Ordering::Relaxed);
+    }
+
+    fn render(&self, bind: &str, started: Instant, json: bool) -> String {
+        let state = match self.phase.load(Ordering::Relaxed) {
+            DRAINING => "draining",
+            STOPPING => "stopping",
+            _ => "running",
+        };
+        let uptime = started.elapsed().as_secs();
+        let connections = self.connections.load(Ordering::Relaxed);
+        let flows = self.flows.load(Ordering::Relaxed);
+        if json {
+            format!(
+                "{{\"state\":\"{state}\",\"listener\":\"{bind}\",\"uptime_secs\":{uptime},\"connections\":{connections},\"flows\":{flows}}}\n"
+            )
+        } else {
+            format!(
+                "{state}\nlistener={bind}\nuptime_secs={uptime}\nconnections={connections}\nflows={flows}\n"
+            )
+        }
+    }
 }
 
 pub struct Server {
@@ -34,6 +90,7 @@ pub fn spawn(
     path: PathBuf,
     bind: String,
     controls: mpsc::Sender<Control>,
+    status: Arc<RuntimeStatus>,
 ) -> Result<Server, String> {
     let parent = path
         .parent()
@@ -54,6 +111,8 @@ pub fn spawn(
         }
     }
     if path.exists() {
+        #[cfg(unix)]
+        verify_socket_path(&path)?;
         std::fs::remove_file(&path)
             .map_err(|error| format!("cannot replace admin socket {}: {error}", path.display()))?;
     }
@@ -66,8 +125,9 @@ pub fn spawn(
         while let Ok((stream, _)) = listener.accept().await {
             let controls = controls.clone();
             let bind = bind.clone();
+            let status = Arc::clone(&status);
             tokio::spawn(async move {
-                let _ = handle(stream, bind, started, controls).await;
+                let _ = handle(stream, bind, started, controls, status).await;
             });
         }
     });
@@ -75,6 +135,12 @@ pub fn spawn(
 }
 
 pub async fn request(path: &Path, request: &str) -> Result<String, String> {
+    tokio::time::timeout(REQUEST_TIMEOUT, request_inner(path, request))
+        .await
+        .map_err(|_| format!("admin request to {} timed out", path.display()))?
+}
+
+async fn request_inner(path: &Path, request: &str) -> Result<String, String> {
     let mut stream = UnixStream::connect(path)
         .await
         .map_err(|error| format!("cannot connect to admin socket {}: {error}", path.display()))?;
@@ -99,6 +165,7 @@ async fn handle(
     bind: String,
     started: Instant,
     controls: mpsc::Sender<Control>,
+    status: Arc<RuntimeStatus>,
 ) -> Result<(), String> {
     let mut request = vec![0; 32];
     let read = stream
@@ -106,16 +173,24 @@ async fn handle(
         .await
         .map_err(|error| format!("cannot read admin request: {error}"))?;
     let response = match std::str::from_utf8(&request[..read]).unwrap_or("").trim() {
-        "status" => format!(
-            "running\nlistener={bind}\nuptime_secs={}\n",
-            started.elapsed().as_secs()
-        ),
+        "status" => status.render(&bind, started, false),
+        "status json" => status.render(&bind, started, true),
         "drain" => match controls.send(Control::Drain).await {
-            Ok(()) => "draining\n".into(),
+            Ok(()) => {
+                status.set_phase(DRAINING);
+                "draining\n".into()
+            }
+            Err(_) => "stopping\n".into(),
+        },
+        "reload" => match controls.send(Control::Reload).await {
+            Ok(()) => "reloading\n".into(),
             Err(_) => "stopping\n".into(),
         },
         "shutdown" => match controls.send(Control::Shutdown).await {
-            Ok(()) => "stopping\n".into(),
+            Ok(()) => {
+                status.set_phase(STOPPING);
+                "stopping\n".into()
+            }
             Err(_) => "stopping\n".into(),
         },
         _ => "error=unknown command\n".into(),
@@ -154,6 +229,21 @@ fn verify_private_directory(path: &Path) -> Result<(), String> {
 }
 
 #[cfg(unix)]
+fn verify_socket_path(path: &Path) -> Result<(), String> {
+    use std::os::unix::fs::FileTypeExt;
+    let kind = std::fs::symlink_metadata(path)
+        .map_err(|error| format!("cannot inspect admin socket {}: {error}", path.display()))?
+        .file_type();
+    if !kind.is_socket() {
+        return Err(format!(
+            "refusing to replace non-socket admin path {}",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
 fn restrict_socket(path: &Path) -> Result<(), String> {
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
@@ -175,7 +265,12 @@ mod tests {
         let directory = std::env::temp_dir().join(format!("velum-admin-{unique}"));
         let path = directory.join("admin.sock");
         let (sender, mut receiver) = mpsc::channel(1);
-        let Ok(server) = spawn(path.clone(), "127.0.0.1:4433".into(), sender) else {
+        let Ok(server) = spawn(
+            path.clone(),
+            "127.0.0.1:4433".into(),
+            sender,
+            Arc::new(RuntimeStatus::default()),
+        ) else {
             // Some constrained test sandboxes forbid Unix-domain socket binding.
             return;
         };
@@ -184,6 +279,12 @@ mod tests {
                 .await
                 .expect("status")
                 .contains("running")
+        );
+        assert!(
+            request(&path, "status json")
+                .await
+                .expect("JSON status")
+                .contains("\"connections\":0")
         );
         assert_eq!(
             request(&path, "shutdown").await.expect("shutdown"),

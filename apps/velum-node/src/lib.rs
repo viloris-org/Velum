@@ -20,6 +20,7 @@ const MAX_SECRET_BYTES: usize = 128;
 const HEADER_BYTES: usize = 4;
 const RELAY_COPY_BUFFER_BYTES: usize = 16 * 1024;
 
+pub mod acme;
 pub mod admin;
 pub mod cli;
 pub mod config;

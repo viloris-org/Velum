@@ -17,9 +17,10 @@ collects the listener, PEM certificate and key paths, and one exact TCP target;
 it generates a 32-byte credential into a separate owner-only file. It then
 writes `~/.config/velum/config.toml` by default.
 
-The same actions are available to automation through `velum setup`, `velum
-config validate`, and `velum serve`. No secret bytes are stored in the TOML
-configuration.
+For automation, use `velum init`, edit the generated TOML and secret file
+through the deployment system, then run `velum config validate` and `velum
+serve`. `velum setup` is intentionally interactive. No secret bytes are stored
+in the TOML configuration.
 
 ## Run
 
@@ -34,17 +35,27 @@ target/release/velum serve
 
 Run `velum` without arguments to open the guided terminal console. Use
 `velum help` for available maintenance commands. `SIGINT` and
-`SIGTERM` stop accepting connections, close the endpoint, and drain active
-work up to `--shutdown-timeout-secs`.
+`SIGTERM` stops accepting connections, closes the endpoint, and drains active
+work up to `limits.shutdown_timeout_secs` from the TOML configuration. `velum
+drain` stops accepting new connections while existing accepted connections run
+to completion; `velum shutdown` closes immediately and applies that bound.
 
 ## Local Maintenance
 
 The running service creates the configured Unix-domain admin socket with owner
 only permissions. `velum status`, `velum drain`, and `velum shutdown` use that
 local socket; they never open a network management port. `drain` and
-`shutdown` currently use the same bounded listener shutdown path. A future
-reload command will require transactional live configuration semantics and is
-not exposed yet.
+`shutdown` have distinct behavior: drain stops admitting new connections and
+waits for accepted work, while shutdown closes the endpoint and applies the
+configured shutdown bound. `reload` is used internally after ACME activation
+to replace the server certificate only after the replacement configuration
+loads successfully.
+
+`velum status --format json` emits a stable, payload-free record with state,
+listener, uptime, admitted connection count, and active-flow count. Admin
+requests time out after five seconds. A custom configuration path receives an
+adjacent `admin.sock` by default, so independent local instances do not share
+their management socket.
 
 
 ## Install a Snapshot
@@ -70,3 +81,8 @@ The base binary does not embed an ACME HTTP client. To install the pinned Lego
 ACME companion on demand, run `scripts/install-lego.sh`; it downloads Lego
 5.2.2 from its official release and verifies the published SHA-256 checksum
 before writing only under `${XDG_DATA_HOME:-~/.local/share}/velum/tools`.
+
+For DNS-01 configuration, issuance, renewal, atomic certificate activation,
+and a systemd user timer, see [ACME operations](acme.md). DNS-provider tokens
+remain environment variables consumed by Lego and are never stored in Velum
+configuration.

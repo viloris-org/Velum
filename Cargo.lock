@@ -1093,6 +1093,7 @@ dependencies = [
  "velum-carrier-quic",
  "velum-server",
  "velum-telemetry",
+ "x509-parser",
 ]
 
 [[package]]
