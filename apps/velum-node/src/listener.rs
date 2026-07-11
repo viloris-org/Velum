@@ -47,17 +47,17 @@ pub async fn serve_quic_listener(
             _ = &mut shutdown => break,
             incoming = endpoint.accept() => match incoming {
                 Some(incoming) => {
+                    let Ok(slot) = Arc::clone(&connection_slots).try_acquire_owned() else {
+                        observer.record(QuicRelayEvent::ConnectionRejected);
+                        incoming.refuse();
+                        continue;
+                    };
                     let admission = admission.clone();
                     let config = config.clone();
                     let observer = Arc::clone(&observer);
-                    let connection_slots = Arc::clone(&connection_slots);
                     connections.spawn(async move {
+                        let _slot = slot;
                         let Ok(connection) = incoming.await else {
-                            return;
-                        };
-                        let Ok(_slot) = connection_slots.try_acquire_owned() else {
-                            observer.record(QuicRelayEvent::ConnectionRejected);
-                            connection.close(0_u32.into(), b"velum connection limit");
                             return;
                         };
                         observer.record(QuicRelayEvent::ConnectionAccepted);
