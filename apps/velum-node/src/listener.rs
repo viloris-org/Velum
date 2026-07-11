@@ -6,11 +6,13 @@
 
 use std::{future::Future, net::SocketAddr, sync::Arc};
 
-use tokio::{task::JoinSet, time::timeout};
+use tokio::{sync::Semaphore, task::JoinSet, time::timeout};
 use velum_carrier_quic::{CarrierId, QuicCarrier};
 use velum_telemetry::QuicRelayEvent;
 
-use crate::{QuicRelayConfig, RelayAdmission, RelayObserver, relay_quic_stream};
+use crate::{
+    ConnectionAdmission, QuicRelayConfig, RelayAdmission, RelayObserver, relay_quic_stream,
+};
 
 /// Binds a server endpoint using deployment-provided TLS and transport settings.
 pub fn bind_quic_listener(
@@ -38,6 +40,7 @@ pub async fn serve_quic_listener(
     }
 
     tokio::pin!(shutdown);
+    let connection_slots = Arc::new(Semaphore::new(config.max_connections));
     let mut connections = JoinSet::new();
     loop {
         tokio::select! {
@@ -47,8 +50,14 @@ pub async fn serve_quic_listener(
                     let admission = admission.clone();
                     let config = config.clone();
                     let observer = Arc::clone(&observer);
+                    let connection_slots = Arc::clone(&connection_slots);
                     connections.spawn(async move {
                         let Ok(connection) = incoming.await else {
+                            return;
+                        };
+                        let Ok(_slot) = connection_slots.try_acquire_owned() else {
+                            observer.record(QuicRelayEvent::ConnectionRejected);
+                            connection.close(0_u32.into(), b"velum connection limit");
                             return;
                         };
                         observer.record(QuicRelayEvent::ConnectionAccepted);
@@ -81,16 +90,31 @@ async fn serve_connection(
     observer: Arc<dyn RelayObserver>,
 ) {
     let carrier = QuicCarrier::new(CarrierId(0), connection);
+    let connection_admission = ConnectionAdmission::default();
+    let stream_slots = Arc::new(Semaphore::new(config.max_streams_per_connection));
     let mut flows = JoinSet::new();
     loop {
         tokio::select! {
             stream = carrier.accept_stream() => match stream {
                 Ok(stream) => {
+                    let Ok(slot) = Arc::clone(&stream_slots).try_acquire_owned() else {
+                        observer.record(QuicRelayEvent::StreamRejected);
+                        continue;
+                    };
                     let admission = admission.clone();
+                    let connection_admission = connection_admission.clone();
                     let config = config.clone();
                     let observer = Arc::clone(&observer);
                     flows.spawn(async move {
-                        let _ = relay_quic_stream(stream, &admission, &config, observer.as_ref()).await;
+                        let _slot = slot;
+                        let _ = relay_quic_stream(
+                            stream,
+                            &admission,
+                            &connection_admission,
+                            &config,
+                            observer.as_ref(),
+                        )
+                        .await;
                     });
                 }
                 Err(_) => break,
@@ -100,6 +124,7 @@ async fn serve_connection(
     }
 
     while flows.join_next().await.is_some() {}
+    connection_admission.close(&admission).await;
 }
 
 #[cfg(test)]

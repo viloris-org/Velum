@@ -4,7 +4,7 @@
 
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 
-use tokio::{net::TcpStream, sync::Mutex, time::timeout};
+use tokio::{io::AsyncWriteExt, net::TcpStream, sync::Mutex, time::timeout};
 use velum_carrier_quic::QuicStream;
 use velum_server::{
     AdmissionControl, AdmissionError, Authenticator, DestinationPolicy, PrincipalId, SessionLease,
@@ -24,8 +24,11 @@ pub use listener::{bind_quic_listener, serve_quic_listener};
 pub struct QuicRelayConfig {
     pub schema_version: u16,
     pub connect_timeout: Duration,
+    pub control_timeout: Duration,
     pub shutdown_timeout: Duration,
     pub max_control_bytes: usize,
+    pub max_connections: usize,
+    pub max_streams_per_connection: usize,
 }
 
 impl Default for QuicRelayConfig {
@@ -33,8 +36,11 @@ impl Default for QuicRelayConfig {
         Self {
             schema_version: 1,
             connect_timeout: Duration::from_secs(5),
+            control_timeout: Duration::from_secs(5),
             shutdown_timeout: Duration::from_secs(5),
             max_control_bytes: MAX_SECRET_BYTES + 64,
+            max_connections: 1_024,
+            max_streams_per_connection: 64,
         }
     }
 }
@@ -43,8 +49,11 @@ impl Default for QuicRelayConfig {
 pub enum ConfigError {
     UnsupportedSchema,
     ZeroConnectTimeout,
+    ZeroControlTimeout,
     ZeroShutdownTimeout,
     ControlLimitTooSmall,
+    ZeroConnectionLimit,
+    ZeroStreamLimit,
 }
 
 impl QuicRelayConfig {
@@ -55,11 +64,20 @@ impl QuicRelayConfig {
         if self.connect_timeout.is_zero() {
             return Err(ConfigError::ZeroConnectTimeout);
         }
+        if self.control_timeout.is_zero() {
+            return Err(ConfigError::ZeroControlTimeout);
+        }
         if self.shutdown_timeout.is_zero() {
             return Err(ConfigError::ZeroShutdownTimeout);
         }
         if self.max_control_bytes < HEADER_BYTES + 1 + "[::1]:65535".len() {
             return Err(ConfigError::ControlLimitTooSmall);
+        }
+        if self.max_connections == 0 {
+            return Err(ConfigError::ZeroConnectionLimit);
+        }
+        if self.max_streams_per_connection == 0 {
+            return Err(ConfigError::ZeroStreamLimit);
         }
         Ok(())
     }
@@ -85,6 +103,83 @@ pub struct RelayAdmission {
     pub quotas: Arc<Mutex<AdmissionControl>>,
 }
 
+#[derive(Clone, Copy)]
+struct AdmittedSession {
+    principal: PrincipalId,
+    lease: SessionLease,
+}
+
+/// Admission state shared by all streams on one QUIC connection.
+///
+/// Each stream still authenticates its control record, but successful streams
+/// must resolve to the same principal and consume one connection-owned session
+/// lease. This keeps session and flow quotas semantically distinct.
+#[derive(Clone, Default)]
+pub struct ConnectionAdmission {
+    session: Arc<Mutex<Option<AdmittedSession>>>,
+}
+
+impl ConnectionAdmission {
+    async fn reserve_flow(
+        &self,
+        admission: &RelayAdmission,
+        principal: PrincipalId,
+        observer: &dyn RelayObserver,
+    ) -> Result<SessionLease, RelayError> {
+        let mut session = self.session.lock().await;
+        let (lease, created_session) = match *session {
+            Some(existing) if existing.principal != principal => {
+                observer.record(QuicRelayEvent::AuthenticationRejected);
+                return Err(RelayError::AuthenticationRejected);
+            }
+            Some(existing) => (existing.lease, false),
+            None => {
+                let lease = open_session(&admission.quotas, principal, observer).await?;
+                *session = Some(AdmittedSession { principal, lease });
+                (lease, true)
+            }
+        };
+
+        if let Err(error) = open_flow(&admission.quotas, principal, lease, observer).await {
+            // A failed first flow must not leave a session quota consumed.
+            if created_session {
+                let _ = admission
+                    .quotas
+                    .lock()
+                    .await
+                    .close_session(principal, lease);
+                *session = None;
+            }
+            return Err(error);
+        }
+        Ok(lease)
+    }
+
+    async fn release_flow(&self, admission: &RelayAdmission, lease: SessionLease) {
+        let session = self.session.lock().await;
+        if let Some(session) = *session
+            && session.lease == lease
+        {
+            let _ = admission
+                .quotas
+                .lock()
+                .await
+                .close_flow(session.principal, lease);
+        }
+    }
+
+    pub async fn close(&self, admission: &RelayAdmission) {
+        let mut session = self.session.lock().await;
+        if let Some(session_lease) = session.take() {
+            let _ = admission
+                .quotas
+                .lock()
+                .await
+                .close_session(session_lease.principal, session_lease.lease);
+        }
+    }
+}
+
 /// Failure classification intentionally omits credentials and destination data.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RelayError {
@@ -98,17 +193,29 @@ pub enum RelayError {
 }
 
 /// Accepts one authenticated QUIC flow, connects only to an exact allowed
-/// target, and relays bytes bidirectionally. The session and flow leases are
-/// released on every return path.
+/// target, and relays bytes bidirectionally. Its flow lease is released on
+/// every return path; the connection releases the shared session lease.
 pub async fn relay_quic_stream(
     stream: QuicStream,
     admission: &RelayAdmission,
+    connection: &ConnectionAdmission,
     config: &QuicRelayConfig,
     observer: &dyn RelayObserver,
 ) -> Result<(), RelayError> {
     config.validate().map_err(|_| RelayError::InvalidControl)?;
     let (mut send, mut receive) = stream.into_parts();
-    let request = read_open_request(&mut receive, config.max_control_bytes).await?;
+    let request = timeout(
+        config.control_timeout,
+        read_open_request(&mut receive, config.max_control_bytes),
+    )
+    .await
+    .map_err(|_| {
+        observer.record(QuicRelayEvent::ControlRejected);
+        RelayError::InvalidControl
+    })?
+    .inspect_err(|_| {
+        observer.record(QuicRelayEvent::ControlRejected);
+    })?;
     let principal = admission
         .authenticator
         .authenticate(&request.secret)
@@ -121,15 +228,9 @@ pub async fn relay_quic_stream(
         return Err(RelayError::DestinationRejected);
     }
 
-    let lease = open_session(&admission.quotas, principal, observer).await?;
-    if let Err(error) = open_flow(&admission.quotas, principal, lease, observer).await {
-        let _ = admission
-            .quotas
-            .lock()
-            .await
-            .close_session(principal, lease);
-        return Err(error);
-    }
+    let lease = connection
+        .reserve_flow(admission, principal, observer)
+        .await?;
     let result = relay_parts(
         &mut send,
         &mut receive,
@@ -137,10 +238,7 @@ pub async fn relay_quic_stream(
         config.connect_timeout,
     )
     .await;
-    let mut quotas = admission.quotas.lock().await;
-    let _ = quotas.close_flow(principal, lease);
-    let _ = quotas.close_session(principal, lease);
-    drop(quotas);
+    connection.release_flow(admission, lease).await;
     if result.is_ok() {
         observer.record(QuicRelayEvent::FlowRelayed);
     } else {
@@ -227,12 +325,22 @@ async fn relay_parts(
         .map_err(|_| RelayError::ConnectFailed)?
         .map_err(|_| RelayError::ConnectFailed)?;
     let (mut target_read, mut target_write) = target.split();
-    let client_to_target = tokio::io::copy(receive, &mut target_write);
-    let target_to_client = tokio::io::copy(&mut target_read, send);
-    let (client_result, target_result) = tokio::join!(client_to_target, target_to_client);
-    client_result.map_err(|_| RelayError::Transport)?;
-    target_result.map_err(|_| RelayError::Transport)?;
-    send.finish().map_err(|_| RelayError::Transport)
+    let client_to_target = async {
+        tokio::io::copy(receive, &mut target_write)
+            .await
+            .map_err(|_| RelayError::Transport)?;
+        target_write
+            .shutdown()
+            .await
+            .map_err(|_| RelayError::Transport)
+    };
+    let target_to_client = async {
+        tokio::io::copy(&mut target_read, send)
+            .await
+            .map_err(|_| RelayError::Transport)?;
+        send.finish().map_err(|_| RelayError::Transport)
+    };
+    tokio::try_join!(client_to_target, target_to_client).map(|_| ())
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -339,11 +447,87 @@ mod tests {
         );
         assert_eq!(
             QuicRelayConfig {
+                control_timeout: Duration::ZERO,
+                ..QuicRelayConfig::default()
+            }
+            .validate(),
+            Err(ConfigError::ZeroControlTimeout)
+        );
+        assert_eq!(
+            QuicRelayConfig {
                 shutdown_timeout: Duration::ZERO,
                 ..QuicRelayConfig::default()
             }
             .validate(),
             Err(ConfigError::ZeroShutdownTimeout)
+        );
+        assert_eq!(
+            QuicRelayConfig {
+                max_connections: 0,
+                ..QuicRelayConfig::default()
+            }
+            .validate(),
+            Err(ConfigError::ZeroConnectionLimit)
+        );
+        assert_eq!(
+            QuicRelayConfig {
+                max_streams_per_connection: 0,
+                ..QuicRelayConfig::default()
+            }
+            .validate(),
+            Err(ConfigError::ZeroStreamLimit)
+        );
+    }
+
+    #[tokio::test]
+    async fn streams_share_one_connection_session_lease() {
+        let principal = PrincipalId(7);
+        let admission = RelayAdmission {
+            authenticator: Arc::new(
+                Authenticator::new([velum_server::PrincipalCredential::new(
+                    principal,
+                    vec![7; 32],
+                )
+                .expect("credential")])
+                .expect("authenticator"),
+            ),
+            destinations: Arc::new(DestinationPolicy::default()),
+            quotas: Arc::new(Mutex::new(AdmissionControl::new(
+                velum_server::PrincipalQuota {
+                    max_sessions: 1,
+                    max_flows_per_session: 2,
+                },
+            ))),
+        };
+        let connection = ConnectionAdmission::default();
+        let observer = NoopRelayObserver;
+
+        let first = connection
+            .reserve_flow(&admission, principal, &observer)
+            .await
+            .expect("first flow");
+        let second = connection
+            .reserve_flow(&admission, principal, &observer)
+            .await
+            .expect("second flow");
+        assert_eq!(first, second);
+        assert_eq!(
+            connection
+                .reserve_flow(&admission, principal, &observer)
+                .await,
+            Err(RelayError::FlowQuotaRejected)
+        );
+
+        connection.release_flow(&admission, first).await;
+        connection.release_flow(&admission, second).await;
+        connection.close(&admission).await;
+        assert!(
+            admission
+                .quotas
+                .lock()
+                .await
+                .open_session(principal)
+                .is_ok()
         );
     }
 }

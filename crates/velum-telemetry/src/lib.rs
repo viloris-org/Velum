@@ -47,6 +47,9 @@ pub enum TransitionRejection {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum QuicRelayEvent {
     ConnectionAccepted,
+    ConnectionRejected,
+    StreamRejected,
+    ControlRejected,
     AuthenticationRejected,
     DestinationRejected,
     SessionQuotaRejected,

@@ -5,16 +5,8 @@ pub fn test_all(root: &Path) -> Result<(), String> {
     super::docs::check(root)?;
 
     run(root, "node", &["validation/validate.mjs"])?;
-    run(
-        root,
-        "node",
-        &["validation/harness/harness.test.mjs"],
-    )?;
-    run(
-        root,
-        "node",
-        &["validation/results/validator.test.mjs"],
-    )?;
+    run(root, "node", &["validation/harness/harness.test.mjs"])?;
+    run(root, "node", &["validation/results/validator.test.mjs"])?;
     run(root, "node", &["validation/results/validate.mjs"])?;
     run(root, "cargo", &["fmt", "--all", "--check"])?;
     run(
