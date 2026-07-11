@@ -4,7 +4,12 @@
 
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 
-use tokio::{io::AsyncWriteExt, net::TcpStream, sync::Mutex, time::timeout};
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::TcpStream,
+    sync::Mutex,
+    time::timeout,
+};
 use velum_carrier_quic::QuicStream;
 use velum_server::{
     AdmissionControl, AdmissionError, Authenticator, DestinationPolicy, PrincipalId, SessionLease,
@@ -13,6 +18,7 @@ use velum_telemetry::QuicRelayEvent;
 
 const MAX_SECRET_BYTES: usize = 128;
 const HEADER_BYTES: usize = 4;
+const RELAY_COPY_BUFFER_BYTES: usize = 16 * 1024;
 
 mod listener;
 
@@ -326,21 +332,54 @@ async fn relay_parts(
         .map_err(|_| RelayError::ConnectFailed)?;
     let (mut target_read, mut target_write) = target.split();
     let client_to_target = async {
-        tokio::io::copy(receive, &mut target_write)
-            .await
-            .map_err(|_| RelayError::Transport)?;
+        copy_quic_to_tcp(receive, &mut target_write).await?;
         target_write
             .shutdown()
             .await
             .map_err(|_| RelayError::Transport)
     };
     let target_to_client = async {
-        tokio::io::copy(&mut target_read, send)
-            .await
-            .map_err(|_| RelayError::Transport)?;
+        copy_tcp_to_quic(&mut target_read, send).await?;
         send.finish().map_err(|_| RelayError::Transport)
     };
     tokio::try_join!(client_to_target, target_to_client).map(|_| ())
+}
+
+async fn copy_quic_to_tcp(
+    receive: &mut quinn::RecvStream,
+    target_write: &mut tokio::net::tcp::WriteHalf<'_>,
+) -> Result<(), RelayError> {
+    let mut buffer = vec![0; RELAY_COPY_BUFFER_BYTES];
+    while let Some(read) = receive
+        .read(&mut buffer)
+        .await
+        .map_err(|_| RelayError::Transport)?
+    {
+        target_write
+            .write_all(&buffer[..read])
+            .await
+            .map_err(|_| RelayError::Transport)?;
+    }
+    Ok(())
+}
+
+async fn copy_tcp_to_quic(
+    target_read: &mut tokio::net::tcp::ReadHalf<'_>,
+    send: &mut quinn::SendStream,
+) -> Result<(), RelayError> {
+    let mut buffer = vec![0; RELAY_COPY_BUFFER_BYTES];
+    loop {
+        let read = target_read
+            .read(&mut buffer)
+            .await
+            .map_err(|_| RelayError::Transport)?;
+        if read == 0 {
+            return Ok(());
+        }
+        send.write_all(&buffer[..read])
+            .await
+            .map_err(|_| RelayError::Transport)?;
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
