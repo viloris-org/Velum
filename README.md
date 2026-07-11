@@ -1,5 +1,12 @@
 # Velum
 
+[![Required CI](https://github.com/viloris-org/Velum/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/viloris-org/Velum/actions/workflows/ci.yml)
+[![CI Health](https://github.com/viloris-org/Velum/actions/workflows/ci-health.yml/badge.svg?branch=main)](https://github.com/viloris-org/Velum/actions/workflows/ci-health.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
+[![Rust 1.97+](https://img.shields.io/badge/Rust-1.97%2B-orange.svg)](rust-toolchain.toml)
+
+[English](README.md) | [Español](README.es.md) | [日本語](README.ja.md) | [简体中文](README.zh-CN.md)
+
 Velum is a research-stage encrypted tunneling protocol for restricted,
 unstable, and heterogeneous networks.
 
@@ -47,3 +54,10 @@ Architecture and documentation checks are also available independently as
 Velum is licensed under the [Apache License 2.0](LICENSE). Contribution,
 security, support, and release expectations are defined in the corresponding
 repository policies.
+
+## Disclaimer
+
+Velum is experimental research software. It has not received a security audit
+and must not be relied on for production security, privacy, availability, or
+circumvention of network restrictions. Use it only where you are authorized to
+do so and accept all associated risks.
