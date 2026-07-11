@@ -4,18 +4,18 @@ pub fn test_all(root: &Path) -> Result<(), String> {
     super::architecture::check(root)?;
     super::docs::check(root)?;
 
-    run(root, "node", &["experiments/stage0/validate.mjs"])?;
+    run(root, "node", &["validation/validate.mjs"])?;
     run(
         root,
         "node",
-        &["experiments/stage0/harness/harness.test.mjs"],
+        &["validation/harness/harness.test.mjs"],
     )?;
     run(
         root,
         "node",
-        &["experiments/stage0/results/validator.test.mjs"],
+        &["validation/results/validator.test.mjs"],
     )?;
-    run(root, "node", &["experiments/stage0/results/validate.mjs"])?;
+    run(root, "node", &["validation/results/validate.mjs"])?;
     run(root, "cargo", &["fmt", "--all", "--check"])?;
     run(
         root,

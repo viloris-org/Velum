@@ -55,7 +55,7 @@ try {
 requireVersion(networks, "networks.json");
 requireVersion(workloads, "workloads.json");
 requireVersion(baselines, "baselines.json");
-requireValue(harnessPackage.name === "velum-stage0-harness", "harness/package.json", "unexpected package name");
+requireValue(harnessPackage.name === "velum-validation-harness", "harness/package.json", "unexpected package name");
 requireValue(/^\d+\.\d+\.\d+$/.test(harnessPackage.version ?? ""), "harness/package.json", "version must be semantic");
 requireValue(baselines.reference_environment?.workload_tool === harnessPackage.name, "baselines.json.reference_environment.workload_tool", "must match the harness package name");
 requireValue(baselines.reference_environment?.workload_tool_version === harnessPackage.version, "baselines.json.reference_environment.workload_tool_version", "must match the harness package version");
@@ -111,9 +111,9 @@ if (ready) {
 }
 
 if (errors.length > 0) {
-  console.error(`Stage 0 manifest validation failed (${errors.length}):`);
+  console.error(`Validation manifest checks failed (${errors.length}):`);
   for (const error of errors) console.error(`- ${error}`);
   process.exitCode = 1;
 } else {
-  console.log(`Stage 0 manifests are structurally valid${ready ? " and execution-ready" : ""}.`);
+  console.log(`Validation manifests are structurally valid${ready ? " and execution-ready" : ""}.`);
 }

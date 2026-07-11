@@ -1,7 +1,8 @@
-# Stage 0 Validation
+# Validation Evidence
 
-This directory turns Stage 0 into a repeatable evidence collection process. It
-does not define the Velum wire protocol or count as evidence by itself.
+This directory provides a repeatable evidence collection process for roadmap
+validation stages. It does not define the Velum wire protocol or count as
+evidence by itself.
 
 ## Contents
 
@@ -19,20 +20,20 @@ does not define the Velum wire protocol or count as evidence by itself.
 Run the structural checks while designing experiments:
 
 ```bash
-node experiments/stage0/validate.mjs
+node validation/validate.mjs
 ```
 
 Before collecting publishable results, require every baseline and toolchain to
 have an immutable version or revision:
 
 ```bash
-node experiments/stage0/validate.mjs --ready
+node validation/validate.mjs --ready
 ```
 
 Validate retained result structure, trial summaries, and checksums with:
 
 ```bash
-node experiments/stage0/results/validate.mjs
+node validation/results/validate.mjs
 ```
 
 The initial manifests deliberately fail `--ready`. Baseline entries remain
@@ -51,5 +52,5 @@ server/toolchain versions must come from the actual reference hosts.
 5. Promote a result to `docs/evidence-ledger.md` only after its environment,
    workload, baseline, sample count, and raw artifacts are reviewable.
 
-Stage 0 exits only when the roadmap's operator-validation and reproducibility
+Each roadmap stage exits only when its operator-validation and reproducibility
 gates are met. Passing this validator is necessary setup, not an exit signal.

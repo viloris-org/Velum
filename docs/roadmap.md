@@ -68,8 +68,8 @@ inside enforceable responsibility boundaries.
 | F-02 | Vision, landscape, architecture, and protocol requirements | `DONE` | [`vision.md`](vision.md), [`landscape.md`](landscape.md), [`architecture.md`](architecture.md), [`protocol-requirements.md`](protocol-requirements.md) |
 | F-03 | Decision records for product, multi-carrier sessions, and Forest Native | `PARTIAL` | ADR-0001 through ADR-0003 exist but remain `Proposed` |
 | F-04 | Machine-readable module ownership and dependency contract | `DONE` | [`architecture-contract.yaml`](architecture-contract.yaml); `cargo xtask architecture` passes |
-| F-05 | Versioned Stage 0 manifests and validation command | `DONE` | `node experiments/stage0/validate.mjs` passes |
-| F-06 | Local workload harness for all five workload classes | `DONE` | `node experiments/stage0/harness/harness.test.mjs` passes when local TCP/UDP binding is permitted |
+| F-05 | Versioned validation manifests and validation command | `DONE` | `node validation/validate.mjs` passes |
+| F-06 | Local workload harness for all five workload classes | `DONE` | `node validation/harness/harness.test.mjs` passes when local TCP/UDP binding is permitted |
 | F-07 | Rust workspace with pinned stable toolchain and dependency policy | `DONE` | [`rust-toolchain.toml`](../rust-toolchain.toml), [`deny.toml`](../deny.toml); `cargo check --workspace` and `cargo deny check` pass |
 | F-08 | `xtask` entry points for architecture, tests, and model checking | `DONE` | `cargo xtask architecture`, `cargo xtask docs`, and `cargo xtask test` pass; Stage 1 adds `model-check` only when it becomes blocking |
 | F-09 | Required CI for docs, manifests, tests, formatting, lint, and dependency policy | `PARTIAL` | [`ci.yml`](../.github/workflows/ci.yml) runs all current gates; default-branch run and required-check evidence await a GitHub remote |
@@ -97,14 +97,14 @@ honest competitor baselines before defining a wire protocol.
 
 | ID | Deliverable | Status | Evidence / completion check |
 |---|---|---|---|
-| S0-01 | Versioned network failure matrix | `DONE` | [`networks.json`](../experiments/stage0/manifests/networks.json); structural validator passes |
-| S0-02 | Interactive TCP, bulk TCP, real-time UDP, DNS-like UDP, and idle-mobile workloads | `DONE` | [`workloads.json`](../experiments/stage0/manifests/workloads.json); local harness tests pass |
-| S0-03 | Candidate MASQUE, AnyTLS, Hysteria 2, and conventional baseline revisions | `PARTIAL` | [`baselines.json`](../experiments/stage0/manifests/baselines.json); all remain `candidate_pinned` |
+| S0-01 | Versioned network failure matrix | `DONE` | [`networks.json`](../validation/manifests/networks.json); structural validator passes |
+| S0-02 | Interactive TCP, bulk TCP, real-time UDP, DNS-like UDP, and idle-mobile workloads | `DONE` | [`workloads.json`](../validation/manifests/workloads.json); local harness tests pass |
+| S0-03 | Candidate MASQUE, AnyTLS, Hysteria 2, and conventional baseline revisions | `PARTIAL` | [`baselines.json`](../validation/manifests/baselines.json); all remain `candidate_pinned` |
 | S0-04 | Reference client and server environment pinned | `PARTIAL` | Client is recorded; server OS and kernel are unset |
-| S0-05 | At least five operator interviews | `TODO` | Five redacted records under `experiments/stage0/interviews/` |
+| S0-05 | At least five operator interviews | `TODO` | Five redacted records under `validation/interviews/` |
 | S0-06 | At least three operators confirm material reconnect or manual switching pain | `TODO` | Three interview records classified `yes` |
-| S0-07 | Every baseline builds and covers its declared workloads | `TODO` | `node experiments/stage0/validate.mjs --ready` passes plus retained build metadata |
-| S0-08 | Raw runs execute across the failure matrix | `TODO` | Immutable result directories following [`results/README.md`](../experiments/stage0/results/README.md) pass `node experiments/stage0/results/validate.mjs` |
+| S0-07 | Every baseline builds and covers its declared workloads | `TODO` | `node validation/validate.mjs --ready` passes plus retained build metadata |
+| S0-08 | Raw runs execute across the failure matrix | `TODO` | Immutable result directories following [`results/README.md`](../validation/results/README.md) pass `node validation/results/validate.mjs` |
 | S0-09 | Repeated trials establish variance and honest baseline comparisons | `TODO` | Sample counts, failures, environment, and raw artifacts retained |
 | S0-10 | Evidence ledger updated from reviewed interviews and measurements | `TODO` | [`evidence-ledger.md`](evidence-ledger.md) links retained evidence |
 | S0-11 | First adapter decision: SOCKS, CONNECT, or TUN | `PARTIAL` | [ADR-0006](adr/0006-stage2-connect-adapter.md) selects experimental IP-only CONNECT; operator evidence remains required before a production commitment |
@@ -360,8 +360,8 @@ later stages.
 
 | Fitness function | Starts | Target command or evidence |
 |---|---|---|
-| Manifest integrity | Foundation | `node experiments/stage0/validate.mjs` |
-| Workload harness correctness | Foundation | `node experiments/stage0/harness/harness.test.mjs` |
+| Manifest integrity | Foundation | `node validation/validate.mjs` |
+| Workload harness correctness | Foundation | `node validation/harness/harness.test.mjs` |
 | Module ownership and allowed dependencies | Foundation | `cargo xtask architecture` |
 | Formatting, lint, and workspace tests | Foundation / Stage 1 | `cargo fmt --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace` |
 | State-machine invariants | Stage 1 | `cargo xtask model-check` plus seeded and exhaustive tests |

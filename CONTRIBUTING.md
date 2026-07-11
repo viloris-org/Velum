@@ -29,11 +29,10 @@ dependencies, and `cargo xtask docs` while changing documentation.
 ## Evidence and Reviews
 
 Benchmark and interview evidence must follow the retention rules under
-`experiments/stage0/`. A pull request may mark a roadmap item `DONE` only when
+`validation/`. A pull request may mark a roadmap item `DONE` only when
 it links a repeatable command, retained result, or reviewed artifact. Review is
 required from the responsibility label named in the architecture contract;
 specific maintainers will be assigned before external releases.
 
 By contributing, you agree that your contribution is licensed under the
 Apache License 2.0.
-

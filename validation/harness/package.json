@@ -1,5 +1,5 @@
 {
-  "name": "velum-stage0-harness",
+  "name": "velum-validation-harness",
   "version": "0.1.0",
   "private": true,
   "type": "module",

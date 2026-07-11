@@ -52,7 +52,7 @@
     "server_kernel": null,
     "impairment_tool": "tc/netem",
     "impairment_tool_version": "iproute2-6.17.0, libbpf 1.6.3",
-    "workload_tool": "velum-stage0-harness",
+    "workload_tool": "velum-validation-harness",
     "workload_tool_version": "0.1.0"
   }
 }

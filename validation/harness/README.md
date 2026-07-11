@@ -1,4 +1,4 @@
-# Stage 0 Workload Harness
+# Validation Workload Harness
 
 This dependency-free Node.js harness generates the five workload classes from
 `../manifests/workloads.json`. It measures application-visible behavior only;
@@ -10,7 +10,7 @@ by the experiment runner.
 Run this on the server side of the baseline tunnel:
 
 ```bash
-node experiments/stage0/harness/server.mjs \
+node validation/harness/server.mjs \
   --host 0.0.0.0 --tcp-port 9000 --udp-port 9001
 ```
 
@@ -23,7 +23,7 @@ Run this on the client side, pointing at the address exposed through the
 baseline:
 
 ```bash
-node experiments/stage0/harness/run.mjs interactive-tcp \
+node validation/harness/run.mjs interactive-tcp \
   --host 127.0.0.1 --tcp-port 9000 --udp-port 9001
 ```
 
@@ -47,5 +47,5 @@ Stdout is JSONL: zero or more `sample` records followed by exactly one
 Run local codec and TCP/UDP integration tests with:
 
 ```bash
-node experiments/stage0/harness/harness.test.mjs
+node validation/harness/harness.test.mjs
 ```

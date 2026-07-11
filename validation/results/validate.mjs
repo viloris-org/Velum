@@ -22,4 +22,4 @@ for (const directory of directories) {
 }
 
 if (failures > 0) process.exitCode = 1;
-else console.log(`Stage 0 results valid (${directories.length} run directories).`);
+else console.log(`Validation results valid (${directories.length} run directories).`);

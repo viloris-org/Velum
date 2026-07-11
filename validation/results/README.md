@@ -43,7 +43,7 @@ The version 1 shape is:
     "tools": { "node": "22.22.2", "tc": "iproute2-6.17.0" }
   },
   "command": {
-    "argv": ["node", "experiments/stage0/harness/run.mjs", "interactive-tcp"],
+    "argv": ["node", "validation/harness/run.mjs", "interactive-tcp"],
     "configuration_sha256": "<64 lowercase hexadecimal characters>"
   },
   "started_at": "2026-07-11T01:02:03Z",
@@ -76,7 +76,7 @@ status and reason. A benchmark report must state exclusions explicitly.
 Validate every retained directory with:
 
 ```bash
-node experiments/stage0/results/validate.mjs
+node validation/results/validate.mjs
 ```
 
 Pass one or more directory paths to validate results outside this repository.

@@ -12,7 +12,7 @@ questions. Proposed ADRs are not final protocol commitments.
   WireGuard comparison.
 - [Evidence ledger](evidence-ledger.md): facts, assumptions, unknowns, and
   invalidation signals.
-- [Stage 0 validation](../experiments/stage0/README.md): versioned network and
+- [Validation evidence](../validation/README.md): versioned network and
   workload manifests, interview records, baseline pins, and raw evidence rules.
 
 ## Protocol Design
