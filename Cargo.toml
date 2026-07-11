@@ -11,6 +11,7 @@ members = [
     "apps/velum-node",
     "crates/velum-telemetry",
     "crates/velum-policy",
+    "crates/velum-forest",
     "crates/velum-session",
 ]
 resolver = "3"

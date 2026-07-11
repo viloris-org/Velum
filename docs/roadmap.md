@@ -219,12 +219,12 @@ correctness.
 
 | ID | Deliverable | Status | Evidence / completion check |
 |---|---|---|---|
-| S4-01 | Real static-service and reverse-proxy modes | `TODO` | Cover service remains functional with Velum disabled |
-| S4-02 | Encrypted authentication exchange with no clear-text Velum marker | `TODO` | Wire and probe review passes |
-| S4-03 | Enabled-versus-disabled differential probe suite | `TODO` | Valid, invalid, slow, replayed, and malformed probes run in CI or retained tests |
-| S4-04 | Versioned traffic-profile schema and rotation | `TODO` | Compatibility and authenticated rotation tests pass |
+| S4-01 | Real static-service and reverse-proxy modes | `PARTIAL` | [`velum-forest`](../crates/velum-forest) serves bounded HTTP/1.1 static responses and reverse-proxies cover requests; loopback coverage runs with `cargo test -p velum-forest`. Application listener/configuration wiring and deployment evidence remain |
+| S4-02 | Encrypted authentication exchange with no clear-text Velum marker | `PARTIAL` | The existing QUIC admission record is processed only after the carrier's TLS handshake, and its application record has no clear-text Velum identifier; raw-wire capture and focused probe review remain |
+| S4-03 | Enabled-versus-disabled differential probe suite | `PARTIAL` | [`velum-forest`](../crates/velum-forest) compares cover responses with traffic profiles enabled and killed for valid, invalid, slow, replayed, and malformed inputs; `cargo test -p velum-forest` passes. Live endpoints and retained probe runs remain |
+| S4-04 | Versioned traffic-profile schema and rotation | `PARTIAL` | [`velum-forest`](../crates/velum-forest) validates versioned, expiring profiles and accepts rotation only through an injected authenticated verifier; `cargo test -p velum-forest` passes. Wire compatibility, deployment authentication integration, and measurements remain; initial scope and AnyTLS-derived constraints are recorded in [`anytls-design-notes.md`](anytls-design-notes.md) |
 | S4-05 | Latency, byte, CPU, and timing budgets | `TODO` | Profile measurements are retained |
-| S4-06 | Forest failure isolation and kill switch | `TODO` | Profile failure disables camouflage without corrupting session state |
+| S4-06 | Forest failure isolation and kill switch | `PARTIAL` | [`ForestRuntime`](../crates/velum-forest/src/lib.rs) disables only traffic-profile selection and has no session dependency; its isolation test runs with `cargo test -p velum-forest`. Application-level failure injection remains |
 | S4-07 | Five independent operator deployments | `TODO` | Redacted deployment reports retained |
 | S4-08 | Focused external threat-model and probe review | `TODO` | Findings are closed or explicitly accepted with owners |
 | S4-09 | ADR-0003 accepted, rejected, or superseded | `TODO` | Decision reflects deployment and probe evidence |

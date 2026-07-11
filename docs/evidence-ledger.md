@@ -9,7 +9,7 @@ This ledger prevents hypotheses from becoming accidental protocol promises.
 | F-001 | CONNECT-UDP can run over HTTP/1.1, HTTP/2, and HTTP/3; HTTP/3 avoids TCP's nested loss recovery | [RFC 9298, sections 1 and 6](https://www.rfc-editor.org/rfc/rfc9298.html) | A TCP carrier is a deployability fallback, not the preferred datagram path |
 | F-002 | QUIC DATAGRAM frames are unreliable and cannot carry arbitrarily large payloads | [RFC 9221](https://www.rfc-editor.org/rfc/rfc9221.html) | Datagram MTU discovery and explicit oversize behavior are mandatory |
 | F-003 | MASQUE excludes proxy discovery and new congestion algorithms from its current charter | [MASQUE charter](https://datatracker.ietf.org/wg/masque/about/) | Velum may own endpoint selection and policy without competing with the base standard |
-| F-004 | AnyTLS provides updateable padding schemes and multiplexed streams over TLS | [AnyTLS protocol](https://github.com/anytls/anytls-go/blob/main/docs/protocol.md) | Profile agility is feasible, but must be separated from session correctness |
+| F-004 | AnyTLS provides authenticated post-handshake profile updates, multiplexed TLS streams, stream readiness confirmation, liveness probes, and negotiated version activation | [AnyTLS protocol](https://github.com/anytls/anytls-go/blob/main/docs/protocol.md) | Profile agility and bounded failure detection are feasible, but profile scheduling and carrier evidence must remain separate from session correctness |
 | F-005 | AnyTLS documents residual timing, downstream, MTU, and probing weaknesses | [AnyTLS FAQ](https://github.com/anytls/anytls-go/blob/main/docs/faq.md) | Forest Native must model more than early uplink packet lengths |
 | F-006 | Hysteria 2 maps TCP to QUIC streams and UDP to QUIC datagrams | [Hysteria 2 protocol](https://github.com/apernet/hysteria/blob/master/PROTOCOL.md) | This is the preferred-carrier performance baseline |
 
@@ -34,6 +34,8 @@ This ledger prevents hypotheses from becoming accidental protocol promises.
 - How should mobile radio and battery cost affect path probing?
 - Does an HTTP-native carrier provide enough benefit to justify its dependency
   and wire complexity, or should v1 use TLS and QUIC directly?
+- Can a signed or authenticated Forest-profile rotation improve measured
+  distributions without introducing a differential endpoint or timing oracle?
 - Which client integration should be first: SOCKS, HTTP CONNECT, or TUN?
 
 ## Decisions
@@ -45,4 +47,3 @@ are **Proposed** and remain reversible.
 
 Update this ledger at every roadmap gate. A benchmark result becomes a fact
 only when its environment, workload, baseline, and raw evidence are retained.
-
