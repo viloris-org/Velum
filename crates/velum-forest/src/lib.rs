@@ -507,57 +507,62 @@ mod tests {
 
     #[tokio::test]
     async fn reverse_proxy_forwards_cover_request_and_response() {
-        let Some(upstream_listener) = loopback_listener().await else {
-            return;
-        };
-        let upstream_address = upstream_listener.local_addr().expect("upstream address");
-        let upstream = tokio::spawn(async move {
-            let (mut connection, _) = upstream_listener.accept().await.expect("upstream accept");
-            let request = read_request_head(&mut connection)
-                .await
-                .expect("upstream request");
-            assert!(request.starts_with(b"GET /health HTTP/1.1\r\n"));
-            connection
-                .write_all(
-                    b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        timeout(Duration::from_secs(2), async {
+            let Some(upstream_listener) = loopback_listener().await else {
+                return;
+            };
+            let upstream_address = upstream_listener.local_addr().expect("upstream address");
+            let upstream = tokio::spawn(async move {
+                let (mut connection, _) = upstream_listener.accept().await.expect("upstream accept");
+                let request = read_request_head(&mut connection)
+                    .await
+                    .expect("upstream request");
+                assert!(request.starts_with(b"GET /health HTTP/1.1\r\n"));
+                connection
+                    .write_all(
+                        b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    )
+                    .await
+                    .expect("upstream response");
+            });
+            let Some(listener) = loopback_listener().await else {
+                return;
+            };
+            let address = listener.local_addr().expect("proxy address");
+            let server = tokio::spawn(async move {
+                let (mut connection, _) = listener.accept().await.expect("proxy accept");
+                serve_cover_connection(
+                    &mut connection,
+                    &CoverServiceConfig {
+                        schema_version: 1,
+                        mode: CoverServiceMode::ReverseProxy {
+                            upstream: upstream_address,
+                        },
+                        request_head_timeout: Duration::from_secs(1),
+                        upstream_timeout: Duration::from_secs(1),
+                    },
                 )
                 .await
-                .expect("upstream response");
-        });
-        let Some(listener) = loopback_listener().await else {
-            return;
-        };
-        let address = listener.local_addr().expect("proxy address");
-        let server = tokio::spawn(async move {
-            let (mut connection, _) = listener.accept().await.expect("proxy accept");
-            serve_cover_connection(
-                &mut connection,
-                &CoverServiceConfig {
-                    schema_version: 1,
-                    mode: CoverServiceMode::ReverseProxy {
-                        upstream: upstream_address,
-                    },
-                    request_head_timeout: Duration::from_secs(1),
-                    upstream_timeout: Duration::from_secs(1),
-                },
-            )
-            .await
-            .expect("proxy serve");
-        });
+                .expect("proxy serve");
+            });
 
-        let mut client = TcpStream::connect(address).await.expect("proxy connect");
-        client
-            .write_all(b"GET /health HTTP/1.1\r\nHost: cover.example\r\n\r\n")
-            .await
-            .expect("proxy request");
-        let mut response = Vec::new();
-        client
-            .read_to_end(&mut response)
-            .await
-            .expect("proxy response");
-        server.await.expect("proxy server");
-        upstream.await.expect("upstream server");
-        assert!(response.starts_with(b"HTTP/1.1 204 No Content\r\n"));
+            let mut client = TcpStream::connect(address).await.expect("proxy connect");
+            client
+                .write_all(b"GET /health HTTP/1.1\r\nHost: cover.example\r\n\r\n")
+                .await
+                .expect("proxy request");
+            client.shutdown().await.expect("proxy request close");
+            let mut response = Vec::new();
+            client
+                .read_to_end(&mut response)
+                .await
+                .expect("proxy response");
+            server.await.expect("proxy server");
+            upstream.await.expect("upstream server");
+            assert!(response.starts_with(b"HTTP/1.1 204 No Content\r\n"));
+        })
+        .await
+        .expect("reverse-proxy test timed out");
     }
 
     #[test]
