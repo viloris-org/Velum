@@ -40,13 +40,13 @@ installer: certificate, secret, DNS, firewall, monitoring, upgrade, and
 rollback provisioning remain operator responsibilities. Read the [operator
 guide](docs/velum-node.md) before using it.
 
-Install an explicitly selected research snapshot by downloading its installer
-from the same immutable tag and running it locally:
+Install an explicitly selected beta or stable release by downloading its
+installer from the same immutable tag and running it locally:
 
 ```bash
 curl --fail --location --remote-name \
-  https://raw.githubusercontent.com/viloris-org/Velum/snapshot-EXAMPLE/scripts/install.sh
-sh ./install.sh --version snapshot-EXAMPLE --add-to-path
+  https://raw.githubusercontent.com/viloris-org/Velum/v0.0.1-beta/scripts/install.sh
+sh ./install.sh --channel beta --version v0.0.1-beta --add-to-path
 ```
 
 After provisioning the configuration, credential file, and PEM material, deploy

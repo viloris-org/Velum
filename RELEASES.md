@@ -1,11 +1,11 @@
 # Release Policy
 
-Velum does not currently publish supported releases. Tags named `snapshot-*`
-may publish checksum-verified **research snapshots** of `velum`; they are
-explicitly pre-releases and create neither a support obligation nor a wire
-compatibility promise.
+Velum publishes checksum-verified releases from `v*` tags. Tags with a
+prerelease suffix publish **beta releases**; `vX.Y.Z` tags publish stable
+releases. Neither track creates a wire compatibility promise until the
+applicable protocol and release gates close.
 
-- Foundation through Stage 4 artifacts are research snapshots and create no
+- Foundation through Stage 4 artifacts are beta releases and create no
   wire compatibility promise.
 - Stage 5 may publish a signed protocol version 0 preview only after its
   interoperability, conformance, and security gates pass.

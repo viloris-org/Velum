@@ -1,18 +1,20 @@
 #!/usr/bin/env sh
-# Install an explicitly selected Velum research snapshot after checksum verification.
+# Install an explicitly selected Velum release after checksum verification.
 set -eu
 
 repository='viloris-org/Velum'
 version=''
+channel=''
 install_dir="${HOME}/.local/bin"
 add_to_path=false
 
 usage() {
     cat <<'EOF'
-Usage: install.sh --version <snapshot-tag> [--install-dir <directory>] [--add-to-path]
+Usage: install.sh --channel <beta|stable> --version <vX.Y.Z[-prerelease]> [--install-dir <directory>] [--add-to-path]
 
-Installs a checksum-verified Velum research snapshot from GitHub Releases.
-Snapshots are experimental and are not supported releases.
+Installs a checksum-verified Velum release from GitHub Releases.
+Beta releases are prereleases and do not establish a stable protocol or support
+commitment.
 
 --add-to-path appends ~/.local/bin to the login shell's startup file when the
 default install directory is used. It does not modify shell configuration by
@@ -24,6 +26,10 @@ while [ "$#" -gt 0 ]; do
     case "$1" in
         --version)
             version=${2:?missing version value}
+            shift 2
+            ;;
+        --channel)
+            channel=${2:?missing channel value}
             shift 2
             ;;
         --install-dir)
@@ -50,9 +56,26 @@ if [ -z "$version" ]; then
     exit 2
 fi
 
-case "$version" in
-    snapshot-*) ;;
-    *) echo 'error: --version must name an explicit snapshot-* tag' >&2; exit 2 ;;
+case "$channel" in
+    beta|stable) ;;
+    '') echo 'error: --channel beta or --channel stable is required' >&2; exit 2 ;;
+    *) echo 'error: --channel must be beta or stable' >&2; exit 2 ;;
+esac
+
+if ! printf '%s\n' "$version" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$'; then
+    echo 'error: --version must name an explicit vX.Y.Z or vX.Y.Z-prerelease tag' >&2
+    exit 2
+fi
+
+case "$channel:$version" in
+    beta:*-*) ;;
+    stable:v[0-9]*.[0-9]*.[0-9]*)
+        case "$version" in
+            *-*) echo 'error: stable releases cannot use a prerelease tag' >&2; exit 2 ;;
+        esac
+        ;;
+    beta:*) echo 'error: beta releases require a prerelease tag such as v0.0.1-beta' >&2; exit 2 ;;
+    *) echo 'error: stable releases require a vX.Y.Z tag' >&2; exit 2 ;;
 esac
 
 if [ "$add_to_path" = true ] && [ "$install_dir" != "${HOME}/.local/bin" ]; then
@@ -64,7 +87,8 @@ case "$(uname -s)" in
     Linux)
         case "$(uname -m)" in
             x86_64) platform='linux-x86_64' ;;
-            *) echo "error: no Linux snapshot is published for $(uname -m)" >&2; exit 1 ;;
+            aarch64|arm64) platform='linux-aarch64' ;;
+            *) echo "error: no Linux release is published for $(uname -m)" >&2; exit 1 ;;
         esac
         ;;
     Darwin)
@@ -122,7 +146,7 @@ if [ ! -w "$install_dir" ]; then
     exit 1
 fi
 install -m 0755 "${temporary_dir}/velum" "${install_dir}/velum"
-printf 'Installed velum research snapshot %s to %s/velum\n' "$version" "$install_dir"
+printf 'Installed velum %s release %s to %s/velum\n' "$channel" "$version" "$install_dir"
 
 if [ "$add_to_path" = true ]; then
     case "${SHELL:-}" in

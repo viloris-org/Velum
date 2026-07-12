@@ -1,6 +1,6 @@
 [package]
 name = "velum-node"
-version = "0.0.0"
+version = "0.0.1-beta"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true

@@ -1,17 +1,17 @@
-name: Build research snapshots
+name: Build release artifacts
 
 on:
   pull_request:
   push:
     branches: [main]
-    tags: ['snapshot-*']
+    tags: ['v*']
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: build-snapshot-${{ github.ref }}
+  group: build-release-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -45,6 +45,8 @@ jobs:
         include:
           - platform: linux-x86_64
             runner: ubuntu-latest
+          - platform: linux-aarch64
+            runner: ubuntu-24.04-arm
           - platform: darwin-aarch64
             runner: macos-14
           - platform: darwin-x86_64
@@ -56,6 +58,16 @@ jobs:
         run: |
           rustup toolchain install 1.97.0 --profile minimal
           rustup override set 1.97.0
+      - name: Verify release tag matches package version
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          expected_version="${GITHUB_REF_NAME#v}"
+          package_version="$(cargo pkgid --package velum-node | sed 's/.*#//')"
+          test "$package_version" = "$expected_version" || {
+            echo "release tag $GITHUB_REF_NAME does not match velum-node version $package_version" >&2
+            exit 1
+          }
       - name: Build velum
         env:
           VELUM_BUILD_REVISION: ${{ github.sha }}
@@ -78,7 +90,7 @@ jobs:
           retention-days: 30
 
   publish:
-    if: startsWith(github.ref, 'refs/tags/snapshot-')
+    if: startsWith(github.ref, 'refs/tags/v')
     needs: build
     runs-on: ubuntu-latest
     permissions:
@@ -93,8 +105,13 @@ jobs:
         run: |
           cd artifacts
           cat *.sha256 > SHA256SUMS
-      - name: Publish research snapshot
+      - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
+        shell: bash
         run: |
-          gh release create "$GITHUB_REF_NAME" artifacts/*.tar.gz artifacts/SHA256SUMS --prerelease --title "Research snapshot $GITHUB_REF_NAME" --notes "Experimental research snapshot from $GITHUB_SHA. Not a supported release and not a stable protocol commitment."
+          release_args=()
+          case "$GITHUB_REF_NAME" in
+            *-*) release_args+=(--prerelease) ;;
+          esac
+          gh release create "$GITHUB_REF_NAME" artifacts/*.tar.gz artifacts/*.sha256 artifacts/SHA256SUMS "${release_args[@]}" --title "Velum $GITHUB_REF_NAME" --notes "Release from $GITHUB_SHA. Pre-release versions do not establish a stable protocol or support commitment."

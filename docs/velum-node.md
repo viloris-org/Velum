@@ -75,25 +75,26 @@ adjacent private `.velum-admin/admin.sock` by default, so independent local inst
 their management socket.
 
 
-## Install a Snapshot
+## Install a Release
 
-Tags named `snapshot-*` produce checksum-verified GitHub prereleases for
-Linux x86_64 and macOS x86_64/aarch64. Install only an explicitly selected
-snapshot:
+Tags named `v*` produce checksum-verified GitHub Releases for Linux
+x86_64/aarch64 and macOS x86_64/aarch64. Tags with a prerelease suffix, such as
+`v0.0.1-beta`, produce prereleases; `vX.Y.Z` tags produce stable releases.
+Install only an explicitly selected release:
 
-Download the installer from the same immutable tag as the requested snapshot,
+Download the installer from the same immutable tag as the requested release,
 review it, then run it locally. Do not execute an installer fetched from the
 moving `main` branch.
 
 ```bash
 curl --fail --location --remote-name \
-  https://raw.githubusercontent.com/viloris-org/Velum/snapshot-EXAMPLE/scripts/install.sh
-sh ./install.sh --version snapshot-EXAMPLE --add-to-path
+  https://raw.githubusercontent.com/viloris-org/Velum/v0.0.1-beta/scripts/install.sh
+sh ./install.sh --channel beta --version v0.0.1-beta --add-to-path
 ```
 
 The script verifies the archive against the release `SHA256SUMS` before
 installing `velum` to `~/.local/bin`. This is integrity checking, not a
-release signature: snapshots remain unsigned research artifacts. Pass
+release signature: beta releases remain unsigned research artifacts. Pass
 `--add-to-path` to add the default `~/.local/bin` directory to the current
 user's shell startup file, then open a new shell. Select another user-owned
 location with `--install-dir` when needed; custom install directories require
