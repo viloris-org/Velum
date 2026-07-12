@@ -17,10 +17,11 @@ collects the listener, PEM certificate and key paths, and one exact TCP target;
 it generates a 32-byte credential into a separate owner-only file. It then
 writes `~/.config/velum/config.toml` by default.
 
-For automation, use `velum init`, edit the generated TOML and secret file
-through the deployment system, then run `velum config validate` and `velum
-serve`. `velum setup` is intentionally interactive. No secret bytes are stored
-in the TOML configuration.
+For automation, use `velum init`, provision the generated TOML, secret file,
+and PEM material through your secret-management system, then run `velum deploy`.
+It validates all of that material before creating and starting a per-config
+systemd user service. `velum setup` is intentionally interactive. No secret
+bytes are stored in the TOML configuration.
 
 ## Run
 
@@ -32,6 +33,22 @@ configured secrets must have the same length.
 ```bash
 target/release/velum serve
 ```
+
+On a systemd host, deploy a validated configuration as a restart-on-failure
+user service with one command:
+
+```bash
+target/release/velum deploy --config /srv/velum/config.toml
+```
+
+`deploy` writes an owner-only, configuration-scoped unit under
+`$XDG_CONFIG_HOME/systemd/user` (or `~/.config/systemd/user`), runs
+`systemctl --user daemon-reload`, enables the unit, and starts or restarts it.
+Use `--dry-run` to inspect the generated unit first. The command is deliberately
+not a secret or certificate provisioner; those materials must exist before it
+runs. It requires a working systemd user manager. For a relay that must survive
+logout, enable user lingering explicitly with `loginctl enable-linger "$USER"`
+according to your host's account policy.
 
 Run `velum` without arguments to open the guided terminal console. Use
 `velum help` for available maintenance commands. `SIGINT` and
@@ -64,16 +81,23 @@ Tags named `snapshot-*` produce checksum-verified GitHub prereleases for
 Linux x86_64 and macOS x86_64/aarch64. Install only an explicitly selected
 snapshot:
 
+Download the installer from the same immutable tag as the requested snapshot,
+review it, then run it locally. Do not execute an installer fetched from the
+moving `main` branch.
+
 ```bash
-curl --fail --location --silent --show-error \
-  https://raw.githubusercontent.com/viloris-org/Velum/main/scripts/install.sh \
-  | sh -s -- --version snapshot-EXAMPLE
+curl --fail --location --remote-name \
+  https://raw.githubusercontent.com/viloris-org/Velum/snapshot-EXAMPLE/scripts/install.sh
+sh ./install.sh --version snapshot-EXAMPLE --add-to-path
 ```
 
-For a reviewable install, download `scripts/install.sh` at the same source
-revision and run it locally. The script verifies the archive against the
-release `SHA256SUMS` before installing `velum` to `~/.local/bin`. Select
-another user-owned location with `--install-dir` when needed.
+The script verifies the archive against the release `SHA256SUMS` before
+installing `velum` to `~/.local/bin`. This is integrity checking, not a
+release signature: snapshots remain unsigned research artifacts. Pass
+`--add-to-path` to add the default `~/.local/bin` directory to the current
+user's shell startup file, then open a new shell. Select another user-owned
+location with `--install-dir` when needed; custom install directories require
+external PATH management.
 
 ## External ACME
 
@@ -82,7 +106,7 @@ ACME companion on demand, run `scripts/install-lego.sh`; it downloads Lego
 5.2.2 from its official release and verifies the published SHA-256 checksum
 before writing only under `${XDG_DATA_HOME:-~/.local/share}/velum/tools`.
 
-For DNS-01 configuration, issuance, renewal, atomic certificate activation,
-and a systemd user timer, see [ACME operations](acme.md). DNS-provider tokens
+For DNS-01 configuration, issuance, renewal, rollback-on-reload-failure
+certificate activation, and a systemd user timer, see [ACME operations](acme.md). DNS-provider tokens
 remain environment variables consumed by Lego and are never stored in Velum
 configuration.

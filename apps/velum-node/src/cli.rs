@@ -9,7 +9,7 @@ use std::{
 use crate::{
     NoopRelayObserver, acme, admin, bind_quic_listener,
     config::{self, Config},
-    serve_quic_listener,
+    deployment, serve_quic_listener,
 };
 
 const USAGE: &str = "\
@@ -18,6 +18,8 @@ Usage:
   velum init [--config PATH]    Create a versioned configuration template
   velum setup [--config PATH]   Interactively create a configuration and credential
   velum serve [--config PATH]   Start the experimental QUIC relay
+  velum deploy [--config PATH] [--binary PATH] [--dry-run]
+                                Validate, install, and start a systemd user service
   velum config validate [--config PATH]
                                 Validate configuration, credentials, and TLS material
   velum cert verify [--config PATH]
@@ -61,6 +63,7 @@ pub async fn run(arguments: impl IntoIterator<Item = String>) -> Result<(), Stri
             Ok(())
         }
         [command, rest @ ..] if command == "serve" => serve(config_path(rest)?).await,
+        [command, rest @ ..] if command == "deploy" => deploy(rest),
         [command, action, rest @ ..] if command == "config" && action == "validate" => {
             validate(config_path(rest)?)
         }
@@ -88,6 +91,29 @@ pub async fn run(arguments: impl IntoIterator<Item = String>) -> Result<(), Stri
         }
         _ => Err(format!("unknown command\n\n{USAGE}")),
     }
+}
+
+fn deploy(arguments: &[String]) -> Result<(), String> {
+    let mut config_path = config::default_config_path();
+    let mut binary = None;
+    let mut dry_run = false;
+    let mut index = 0;
+    while index < arguments.len() {
+        match arguments[index].as_str() {
+            "--config" => {
+                config_path = PathBuf::from(next_value(arguments, &mut index, "--config")?)
+            }
+            "--binary" => {
+                binary = Some(PathBuf::from(next_value(
+                    arguments, &mut index, "--binary",
+                )?))
+            }
+            "--dry-run" => dry_run = true,
+            flag => return Err(format!("unknown deploy option {flag}")),
+        }
+        index += 1;
+    }
+    deployment::deploy(&config_path, binary, dry_run)
 }
 
 struct AcmeConfiguration {
@@ -437,5 +463,10 @@ mod tests {
         assert_eq!(parsed.config_path, PathBuf::from("relay.toml"));
         assert_eq!(parsed.domains, ["relay.example.com"]);
         assert!(parsed.staging);
+    }
+
+    #[test]
+    fn rejects_unknown_deploy_options() {
+        assert!(deploy(&["--bad".into()]).is_err());
     }
 }

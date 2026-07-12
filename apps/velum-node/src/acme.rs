@@ -124,19 +124,30 @@ async fn activate(config_path: &Path, config: &Config, acme: &AcmeConfig) -> Res
             return Err(error);
         }
     };
-    let result = activate_pair(
+    let activation = activate_pair(
         &staged_certificate,
         &staged_private_key,
         &config.listener.certificate,
         &config.listener.private_key,
     );
-    if result.is_err() {
+    if activation.is_err() {
         cleanup_path(&staged_certificate);
         cleanup_path(&staged_private_key);
     }
-    result?;
+    let activation = activation?;
     println!("Activated ACME certificate for {domain}");
-    request_reload(config_path).await
+    match request_reload(config_path).await {
+        Ok(()) => {
+            activation.commit();
+            Ok(())
+        }
+        Err(error) => activation.rollback().map_or_else(
+            |rollback_error| Err(format!(
+                "{error}; additionally failed to restore the previous certificate pair: {rollback_error}"
+            )),
+            |_| Err(format!("{error}; restored the previous certificate pair")),
+        ),
+    }
 }
 
 async fn request_reload(config_path: &Path) -> Result<(), String> {
@@ -173,12 +184,38 @@ fn stage_private_file(source: &Path, destination: &Path) -> Result<PathBuf, Stri
     Ok(temporary)
 }
 
+struct ActivatedPair {
+    certificate: PathBuf,
+    private_key: PathBuf,
+    certificate_backup: Option<PathBuf>,
+    private_key_backup: Option<PathBuf>,
+}
+
+impl ActivatedPair {
+    fn commit(self) {
+        cleanup(&self.certificate_backup);
+        cleanup(&self.private_key_backup);
+    }
+
+    fn rollback(self) -> Result<(), String> {
+        let private_key = restore_file(&self.private_key, self.private_key_backup.as_deref());
+        let certificate = restore_file(&self.certificate, self.certificate_backup.as_deref());
+        match (private_key, certificate) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+            (Err(private_key), Err(certificate)) => Err(format!(
+                "private key rollback failed: {private_key}; certificate rollback failed: {certificate}"
+            )),
+        }
+    }
+}
+
 fn activate_pair(
     staged_certificate: &Path,
     staged_private_key: &Path,
     certificate: &Path,
     private_key: &Path,
-) -> Result<(), String> {
+) -> Result<ActivatedPair, String> {
     let certificate_backup = backup_file(certificate)?;
     let private_key_backup = match backup_file(private_key) {
         Ok(backup) => backup,
@@ -205,9 +242,12 @@ fn activate_pair(
         };
     }
 
-    cleanup(&certificate_backup);
-    cleanup(&private_key_backup);
-    Ok(())
+    Ok(ActivatedPair {
+        certificate: certificate.to_owned(),
+        private_key: private_key.to_owned(),
+        certificate_backup,
+        private_key_backup,
+    })
 }
 
 fn backup_file(path: &Path) -> Result<Option<PathBuf>, String> {
@@ -368,7 +408,8 @@ mod tests {
             &certificate,
             &private_key,
         )
-        .expect("activate pair");
+        .expect("activate pair")
+        .commit();
 
         assert_eq!(
             fs::read(&certificate).expect("certificate"),
@@ -403,6 +444,41 @@ mod tests {
             )
             .is_err()
         );
+
+        assert_eq!(
+            fs::read(&certificate).expect("certificate"),
+            b"old certificate"
+        );
+        assert_eq!(fs::read(&private_key).expect("key"), b"old key");
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn pair_activation_can_restore_both_files_after_a_reload_failure() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!("velum-acme-{unique}"));
+        fs::create_dir_all(&directory).expect("directory");
+        let certificate = directory.join("cert.pem");
+        let private_key = directory.join("key.pem");
+        let staged_certificate = temporary_path(&certificate, "stage");
+        let staged_private_key = temporary_path(&private_key, "stage");
+        fs::write(&certificate, b"old certificate").expect("certificate");
+        fs::write(&private_key, b"old key").expect("key");
+        fs::write(&staged_certificate, b"new certificate").expect("staged certificate");
+        fs::write(&staged_private_key, b"new key").expect("staged key");
+
+        activate_pair(
+            &staged_certificate,
+            &staged_private_key,
+            &certificate,
+            &private_key,
+        )
+        .expect("activate pair")
+        .rollback()
+        .expect("restore pair");
 
         assert_eq!(
             fs::read(&certificate).expect("certificate"),

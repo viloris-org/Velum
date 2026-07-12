@@ -31,6 +31,37 @@ toggle.
 Start with the [documentation index](docs/README.md) and the
 [implementation status and roadmap](docs/roadmap.md).
 
+## Experimental Operations
+
+The `velum` research CLI can validate a provisioned configuration and deploy it
+as a systemd user service with `velum deploy --config PATH`. This is a local
+process-lifecycle helper, not a production-ready one-click infrastructure
+installer: certificate, secret, DNS, firewall, monitoring, upgrade, and
+rollback provisioning remain operator responsibilities. Read the [operator
+guide](docs/velum-node.md) before using it.
+
+Install an explicitly selected research snapshot by downloading its installer
+from the same immutable tag and running it locally:
+
+```bash
+curl --fail --location --remote-name \
+  https://raw.githubusercontent.com/viloris-org/Velum/snapshot-EXAMPLE/scripts/install.sh
+sh ./install.sh --version snapshot-EXAMPLE --add-to-path
+```
+
+After provisioning the configuration, credential file, and PEM material, deploy
+the relay as the current user:
+
+```bash
+velum config validate --config /srv/velum/config.toml
+velum deploy --config /srv/velum/config.toml
+velum status --format json --config /srv/velum/config.toml
+```
+
+Open a new shell after installation, or run `export PATH="$HOME/.local/bin:$PATH"`
+in the current one. `--add-to-path` changes only the current user's shell
+startup file; omit it when PATH is managed externally.
+
 ## Current Validation
 
 The repository pins Node 22.22.2 and Rust 1.97.0. With `cargo-deny` 0.20.2

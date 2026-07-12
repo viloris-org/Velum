@@ -5,13 +5,18 @@ set -eu
 repository='viloris-org/Velum'
 version=''
 install_dir="${HOME}/.local/bin"
+add_to_path=false
 
 usage() {
     cat <<'EOF'
-Usage: install.sh --version <snapshot-tag> [--install-dir <directory>]
+Usage: install.sh --version <snapshot-tag> [--install-dir <directory>] [--add-to-path]
 
 Installs a checksum-verified Velum research snapshot from GitHub Releases.
 Snapshots are experimental and are not supported releases.
+
+--add-to-path appends ~/.local/bin to the login shell's startup file when the
+default install directory is used. It does not modify shell configuration by
+default.
 EOF
 }
 
@@ -24,6 +29,10 @@ while [ "$#" -gt 0 ]; do
         --install-dir)
             install_dir=${2:?missing install directory value}
             shift 2
+            ;;
+        --add-to-path)
+            add_to_path=true
+            shift
             ;;
         --help)
             usage
@@ -38,6 +47,16 @@ done
 
 if [ -z "$version" ]; then
     echo 'error: --version is required' >&2
+    exit 2
+fi
+
+case "$version" in
+    snapshot-*) ;;
+    *) echo 'error: --version must name an explicit snapshot-* tag' >&2; exit 2 ;;
+esac
+
+if [ "$add_to_path" = true ] && [ "$install_dir" != "${HOME}/.local/bin" ]; then
+    echo 'error: --add-to-path is supported only with the default ~/.local/bin install directory' >&2
     exit 2
 fi
 
@@ -104,3 +123,19 @@ if [ ! -w "$install_dir" ]; then
 fi
 install -m 0755 "${temporary_dir}/velum" "${install_dir}/velum"
 printf 'Installed velum research snapshot %s to %s/velum\n' "$version" "$install_dir"
+
+if [ "$add_to_path" = true ]; then
+    case "${SHELL:-}" in
+        */zsh) profile="${HOME}/.zshrc" ;;
+        */bash) profile="${HOME}/.bashrc" ;;
+        *) profile="${HOME}/.profile" ;;
+    esac
+    path_line='export PATH="$HOME/.local/bin:$PATH"'
+    if [ ! -f "$profile" ] || ! grep -Fqx "$path_line" "$profile"; then
+        printf '\n# Added by the Velum installer\n%s\n' "$path_line" >> "$profile"
+        printf 'Added ~/.local/bin to PATH in %s\n' "$profile"
+    fi
+    printf 'Open a new shell or run: export PATH="$HOME/.local/bin:$PATH"\n'
+elif ! command -v velum >/dev/null 2>&1; then
+    printf 'Run ~/.local/bin/velum, add ~/.local/bin to PATH, or rerun with --add-to-path.\n'
+fi

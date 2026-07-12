@@ -36,8 +36,10 @@ velum acme obtain
 After a successful staging test, repeat `acme configure` without `--staging`,
 then run `velum acme obtain`. The command invokes Lego with DNS-01, validates
 the generated certificate and key, stages both replacements before activation,
-rolls the certificate back if the private-key replacement fails, and requests
-a confirmed local socket reload. The ACME account and
+retains the previous pair until a confirmed local socket reload, and restores
+it if reload fails. A process crash between the two file replacements still
+requires operator recovery; this is not a multi-file atomic filesystem update.
+The ACME account and
 generated files reside in `~/.local/state/velum/acme` (or
 `$XDG_STATE_HOME/velum/acme`) with owner-only directory permissions.
 

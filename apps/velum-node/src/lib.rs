@@ -25,6 +25,7 @@ pub mod acme;
 pub mod admin;
 pub mod cli;
 pub mod config;
+pub mod deployment;
 mod listener;
 
 pub use listener::{bind_quic_listener, serve_quic_listener};
