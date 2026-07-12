@@ -7,9 +7,9 @@ use std::{
 };
 
 use crate::{
-    NoopRelayObserver, acme, admin, bind_quic_listener,
+    NoopRelayObserver, acme, admin, bind_cover_listener, bind_quic_listener,
     config::{self, Config},
-    deployment, serve_quic_listener,
+    deployment, serve_cover_listener, serve_quic_listener,
 };
 
 const USAGE: &str = "\
@@ -17,7 +17,7 @@ Usage:
   velum                         Open the guided operator console
   velum init [--config PATH]    Create a versioned configuration template
   velum setup [--config PATH]   Interactively create a configuration and credential
-  velum serve [--config PATH]   Start the experimental QUIC relay
+  velum serve [--config PATH]   Start the experimental QUIC relay and optional cover service
   velum deploy [--config PATH] [--binary PATH] [--dry-run]
                                 Validate, install, and start a systemd user service
   velum config validate [--config PATH]
@@ -198,6 +198,19 @@ fn setup(path: PathBuf) -> Result<(), String> {
         &config.listener.private_key.display().to_string(),
     )?);
     config.allowed_targets[0] = prompt_default("Allowed TCP target", &config.allowed_targets[0])?;
+    if prompt_yes_no("Enable optional reverse-proxy cover service", false)? {
+        let default_bind = config.listener.bind.clone();
+        config.cover_service = Some(config::CoverServiceConfig {
+            bind: prompt_default("Cover TCP listener address", &default_bind)?,
+            upstream: prompt_default("Cover reverse-proxy upstream", "127.0.0.1:8080")?,
+            request_head_timeout_secs: prompt_positive_u64(
+                "Cover request-head timeout seconds",
+                5,
+            )?,
+            upstream_timeout_secs: prompt_positive_u64("Cover upstream timeout seconds", 5)?,
+            max_connections: prompt_positive_usize("Cover maximum connections", 256)?,
+        });
+    }
     let secret_path = config.credentials[0].secret_file.clone();
     let mut secret = [0_u8; 32];
     getrandom::fill(&mut secret).map_err(|error| format!("cannot generate credential: {error}"))?;
@@ -239,12 +252,37 @@ fn verify_certificate(path: PathBuf) -> Result<(), String> {
 
 async fn serve(path: PathBuf) -> Result<(), String> {
     let loaded = config::load(&path)?;
+    let cover_listener = match loaded.cover_service.as_ref() {
+        Some(cover) => Some(
+            bind_cover_listener(cover.bind)
+                .await
+                .map_err(|error| format!("cannot bind cover service: {error}"))?,
+        ),
+        None => None,
+    };
     let endpoint = bind_quic_listener(loaded.bind, loaded.server_config)
         .map_err(|error| format!("cannot bind {}: {error}", loaded.bind))?;
     let address = endpoint
         .local_addr()
         .map_err(|error| format!("cannot determine listener address: {error}"))?;
     eprintln!("velum listening on {address}");
+    let (cover_shutdown, cover_shutdown_request) = tokio::sync::watch::channel(false);
+    let cover_task = match (cover_listener, loaded.cover_service.clone()) {
+        (Some(listener), Some(cover)) => {
+            let address = listener
+                .local_addr()
+                .map_err(|error| format!("cannot determine cover listener address: {error}"))?;
+            eprintln!("velum cover service listening on {address}");
+            Some(tokio::spawn(serve_cover_listener(
+                listener,
+                cover.config,
+                cover.max_connections,
+                cover_shutdown_request,
+            )))
+        }
+        (None, None) => None,
+        _ => return Err("cover listener configuration changed during startup".into()),
+    };
     let (controls, control_requests) = tokio::sync::mpsc::channel(4);
     let signal_controls = controls.clone();
     let status = Arc::new(admin::RuntimeStatus::default());
@@ -276,6 +314,10 @@ async fn serve(path: PathBuf) -> Result<(), String> {
     .await;
     signal_task.abort();
     admin.stop();
+    let _ = cover_shutdown.send(true);
+    if let Some(cover_task) = cover_task {
+        let _ = cover_task.await;
+    }
     result
 }
 
@@ -400,6 +442,35 @@ fn prompt_default(label: &str, default: &str) -> Result<String, String> {
     })
 }
 
+fn prompt_yes_no(label: &str, default: bool) -> Result<bool, String> {
+    let default = if default { "yes" } else { "no" };
+    parse_yes_no(label, &prompt_default(label, default)?)
+}
+
+fn parse_yes_no(label: &str, value: &str) -> Result<bool, String> {
+    match value {
+        "yes" | "y" => Ok(true),
+        "no" | "n" => Ok(false),
+        _ => Err(format!("{label} must be yes or no")),
+    }
+}
+
+fn prompt_positive_u64(label: &str, default: u64) -> Result<u64, String> {
+    prompt_default(label, &default.to_string())?
+        .parse::<u64>()
+        .ok()
+        .filter(|value| *value > 0)
+        .ok_or_else(|| format!("{label} must be a positive integer"))
+}
+
+fn prompt_positive_usize(label: &str, default: usize) -> Result<usize, String> {
+    prompt_default(label, &default.to_string())?
+        .parse::<usize>()
+        .ok()
+        .filter(|value| *value > 0)
+        .ok_or_else(|| format!("{label} must be a positive integer"))
+}
+
 fn report(result: Result<(), String>) {
     match result {
         Ok(()) => {}
@@ -468,5 +539,12 @@ mod tests {
     #[test]
     fn rejects_unknown_deploy_options() {
         assert!(deploy(&["--bad".into()]).is_err());
+    }
+
+    #[test]
+    fn yes_no_prompt_values_are_case_sensitive_and_unambiguous() {
+        assert_eq!(parse_yes_no("Cover service", "yes"), Ok(true));
+        assert_eq!(parse_yes_no("Cover service", "n"), Ok(false));
+        assert!(parse_yes_no("Cover service", "true").is_err());
     }
 }

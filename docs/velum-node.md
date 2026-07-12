@@ -134,3 +134,26 @@ For DNS-01 configuration, issuance, renewal, rollback-on-reload-failure
 certificate activation, and a systemd user timer, see [ACME operations](acme.md). DNS-provider tokens
 remain environment variables consumed by Lego and are never stored in Velum
 configuration.
+
+## Optional Cover Service
+
+`velum init` includes the following commented example. Removing the comment
+markers enables a bounded plaintext HTTP/1.1 reverse-proxy listener; it is
+intended to run behind an operator-owned standard TLS terminator. The TCP cover
+listener may use the same IP and port as the QUIC UDP listener.
+
+```toml
+[cover_service]
+bind = "0.0.0.0:4433"
+upstream = "cover.example.com:8080"
+request_head_timeout_secs = 5
+upstream_timeout_secs = 5
+max_connections = 256
+```
+
+`bind` must be a literal `IP:PORT`; `upstream` may be a literal address or a
+`hostname:PORT`. Hostnames are resolved when the configuration is loaded and
+their selected address remains fixed until the next reload or restart. The
+service is disabled when the section is absent. It does not implement TLS
+fallback attachment routing; the upstream must be a real application the
+operator is authorized to serve.

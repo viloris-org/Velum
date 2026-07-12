@@ -25,10 +25,12 @@ pub mod acme;
 pub mod admin;
 pub mod cli;
 pub mod config;
+mod cover_listener;
 pub mod deployment;
 mod listener;
 
 pub use listener::{bind_quic_listener, serve_quic_listener};
+pub use cover_listener::{bind_cover_listener, serve_cover_listener};
 
 /// Versioned, application-owned configuration for the experimental QUIC
 /// listener. Secrets and certificates are supplied out of band.

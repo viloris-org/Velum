@@ -3,7 +3,7 @@
 use std::{
     fs::{self, File},
     io::BufReader,
-    net::SocketAddr,
+    net::{SocketAddr, ToSocketAddrs},
     path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
@@ -22,6 +22,16 @@ use crate::{QuicRelayConfig, RelayAdmission};
 
 const VERSION: u16 = 1;
 const MAX_SECRET_BYTES: usize = 128;
+const COVER_SERVICE_TEMPLATE: &str = r#"
+# Optional reverse-proxy cover service. It accepts plaintext HTTP/1.1 behind
+# an operator-owned TLS terminator; omit this section to keep it disabled.
+# [cover_service]
+# bind = "0.0.0.0:4433"
+# upstream = "cover.example.com:8080"
+# request_head_timeout_secs = 5
+# upstream_timeout_secs = 5
+# max_connections = 256
+"#;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Config {
@@ -31,6 +41,8 @@ pub struct Config {
     pub credentials: Vec<CredentialConfig>,
     pub allowed_targets: Vec<String>,
     pub limits: Limits,
+    #[serde(default)]
+    pub cover_service: Option<CoverServiceConfig>,
     #[serde(default)]
     pub acme: Option<AcmeConfig>,
 }
@@ -64,6 +76,17 @@ pub struct Limits {
     pub shutdown_timeout_secs: u64,
 }
 
+/// An optional plaintext HTTP listener intended to sit behind an operator-owned
+/// TLS terminator. It proxies only to one configured cover-service upstream.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct CoverServiceConfig {
+    pub bind: String,
+    pub upstream: String,
+    pub request_head_timeout_secs: u64,
+    pub upstream_timeout_secs: u64,
+    pub max_connections: usize,
+}
+
 /// Non-secret ACME policy. DNS-provider credentials stay in the environment
 /// consumed by Lego and must never be written to this configuration file.
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -82,6 +105,14 @@ pub struct LoadedConfig {
     pub server_config: quinn::ServerConfig,
     pub admission: RelayAdmission,
     pub relay: QuicRelayConfig,
+    pub cover_service: Option<LoadedCoverService>,
+}
+
+#[derive(Clone, Debug)]
+pub struct LoadedCoverService {
+    pub bind: SocketAddr,
+    pub config: velum_forest::CoverServiceConfig,
+    pub max_connections: usize,
 }
 
 impl Config {
@@ -111,6 +142,7 @@ impl Config {
                 control_timeout_secs: 5,
                 shutdown_timeout_secs: 5,
             },
+            cover_service: None,
             acme: None,
         }
     }
@@ -163,6 +195,7 @@ pub fn write(path: &Path, config: &Config) -> Result<(), String> {
     })?;
     let encoded = toml::to_string_pretty(config)
         .map_err(|error| format!("cannot encode configuration: {error}"))?;
+    let encoded = format!("{encoded}\n{COVER_SERVICE_TEMPLATE}");
     let temporary = path.with_extension("toml.tmp");
     fs::write(&temporary, encoded).map_err(|error| {
         format!(
@@ -252,6 +285,11 @@ pub fn load(path: &Path) -> Result<LoadedConfig, String> {
     relay
         .validate()
         .map_err(|error| format!("invalid relay limits: {error:?}"))?;
+    let cover_service = config
+        .cover_service
+        .as_ref()
+        .map(load_cover_service)
+        .transpose()?;
     let quota = PrincipalQuota {
         max_sessions: positive_limit("limits.max_sessions", config.limits.max_sessions)?,
         max_flows_per_session: positive_limit(
@@ -273,6 +311,32 @@ pub fn load(path: &Path) -> Result<LoadedConfig, String> {
             quotas: Arc::new(Mutex::new(AdmissionControl::new(quota))),
         },
         relay,
+        cover_service,
+    })
+}
+
+fn load_cover_service(config: &CoverServiceConfig) -> Result<LoadedCoverService, String> {
+    let bind = parse_socket("cover_service.bind", &config.bind)?;
+    let upstream = resolve_upstream("cover_service.upstream", &config.upstream)?;
+    let service = velum_forest::CoverServiceConfig {
+        schema_version: 1,
+        mode: velum_forest::CoverServiceMode::ReverseProxy { upstream },
+        request_head_timeout: positive_duration(
+            "cover_service.request_head_timeout_secs",
+            config.request_head_timeout_secs,
+        )?,
+        upstream_timeout: positive_duration(
+            "cover_service.upstream_timeout_secs",
+            config.upstream_timeout_secs,
+        )?,
+    };
+    service
+        .validate()
+        .map_err(|error| format!("invalid cover service configuration: {error:?}"))?;
+    Ok(LoadedCoverService {
+        bind,
+        config: service,
+        max_connections: positive_limit("cover_service.max_connections", config.max_connections)?,
     })
 }
 
@@ -376,6 +440,26 @@ fn parse_socket(name: &str, value: &str) -> Result<SocketAddr, String> {
         .map_err(|_| format!("{name} must be an IP:PORT socket address"))
 }
 
+/// Resolves an operator-configured cover upstream once during configuration
+/// loading. The runtime receives only the resolved address, so serving a
+/// connection never performs DNS work and a DNS change requires reload/restart.
+fn resolve_upstream(name: &str, value: &str) -> Result<SocketAddr, String> {
+    if let Ok(address) = value.parse() {
+        return Ok(address);
+    }
+    let (_, port) = value
+        .rsplit_once(':')
+        .ok_or_else(|| format!("{name} must be a hostname:PORT or IP:PORT"))?;
+    if port.parse::<u16>().ok().filter(|port| *port > 0).is_none() {
+        return Err(format!("{name} must use a positive numeric port"));
+    }
+    value
+        .to_socket_addrs()
+        .map_err(|error| format!("cannot resolve {name} {value}: {error}"))?
+        .next()
+        .ok_or_else(|| format!("cannot resolve {name} {value}: no socket addresses returned"))
+}
+
 fn positive_limit(name: &str, value: usize) -> Result<usize, String> {
     if value == 0 {
         Err(format!("{name} must be positive"))
@@ -426,6 +510,44 @@ mod tests {
     #[test]
     fn rejects_non_hex_secrets() {
         assert!(decode_secret("not-hex").is_err());
+    }
+
+    #[test]
+    fn cover_service_requires_a_valid_bind_and_positive_limits() {
+        let valid = CoverServiceConfig {
+            bind: "0.0.0.0:4433".into(),
+            upstream: "127.0.0.1:8080".into(),
+            request_head_timeout_secs: 5,
+            upstream_timeout_secs: 5,
+            max_connections: 256,
+        };
+        assert!(load_cover_service(&valid).is_ok());
+
+        let invalid_bind = CoverServiceConfig {
+            bind: "cover.example:443".into(),
+            ..valid.clone()
+        };
+        assert!(load_cover_service(&invalid_bind).is_err());
+
+        let invalid_limit = CoverServiceConfig {
+            max_connections: 0,
+            ..valid
+        };
+        assert!(load_cover_service(&invalid_limit).is_err());
+    }
+
+    #[test]
+    fn cover_service_resolves_a_hostname_upstream_at_configuration_load() {
+        let upstream = resolve_upstream("cover_service.upstream", "localhost:8080")
+            .expect("localhost resolution");
+        assert_eq!(upstream.port(), 8080);
+        assert!(resolve_upstream("cover_service.upstream", "localhost:not-a-port").is_err());
+    }
+
+    #[test]
+    fn generated_template_documents_the_disabled_cover_service() {
+        assert!(COVER_SERVICE_TEMPLATE.contains("# [cover_service]"));
+        assert!(COVER_SERVICE_TEMPLATE.contains("# upstream = \"cover.example.com:8080\""));
     }
 
     #[cfg(unix)]

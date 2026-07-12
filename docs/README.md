@@ -46,6 +46,7 @@ questions. Proposed ADRs are not final protocol commitments.
 - [ADR-0005: Stage 2 server admission](adr/0005-stage2-server-admission.md)
 - [ADR-0006: Stage 2 CONNECT adapter](adr/0006-stage2-connect-adapter.md)
 - [ADR-0007: Stage 2 runtime composition](adr/0007-stage2-runtime-composition.md)
+- [ADR-0011: Cover-service listener wiring](adr/0011-cover-service-listener-wiring.md)
 
 ## Document Status
 
