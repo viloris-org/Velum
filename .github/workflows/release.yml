@@ -119,4 +119,4 @@ jobs:
           case "$GITHUB_REF_NAME" in
             *-*) release_args+=(--prerelease) ;;
           esac
-          gh release create "$GITHUB_REF_NAME" artifacts/*.tar.gz artifacts/*.sha256 artifacts/SHA256SUMS "${release_args[@]}" --title "Velum $GITHUB_REF_NAME" --notes "Release from $GITHUB_SHA. Pre-release versions do not establish a stable protocol or support commitment."
+          gh release create "$GITHUB_REF_NAME" artifacts/*.tar.gz artifacts/*.sha256 artifacts/SHA256SUMS "${release_args[@]}" --repo "$GITHUB_REPOSITORY" --title "Velum $GITHUB_REF_NAME" --notes "Release from $GITHUB_SHA. Pre-release versions do not establish a stable protocol or support commitment."
