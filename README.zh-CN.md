@@ -33,13 +33,33 @@ systemd 用户服务。这是本地进程生命周期助手，而不是生产可
 证书、密钥、DNS、防火墙、监控、升级与回滚仍由运维人员负责。使用前请阅读
 [运维指南](docs/velum-node.md)。
 
-从与目标 snapshot 相同的不可变标签下载安装脚本，并在本地执行，可安装指定研究快照：
+选择所需 channel 并直接复制命令。安装器会自行解析最新的匹配发布版本：
 
 ```bash
 curl --fail --location --remote-name \
-  https://raw.githubusercontent.com/viloris-org/Velum/snapshot-EXAMPLE/scripts/install.sh
-sh ./install.sh --version snapshot-EXAMPLE --add-to-path
+  https://raw.githubusercontent.com/viloris-org/Velum/main/scripts/install.sh && \
+sh ./install.sh --channel stable --latest --add-to-path
 ```
+
+```bash
+curl --fail --location --remote-name \
+  https://raw.githubusercontent.com/viloris-org/Velum/main/scripts/install.sh && \
+sh ./install.sh --channel beta --latest --add-to-path
+```
+
+若需要可复现安装，请从已审阅的固定 tag 下载脚本，并指定确切版本：
+
+```bash
+INSTALLER_TAG='vX.Y.Z'
+curl --fail --location --remote-name \
+  "https://raw.githubusercontent.com/viloris-org/Velum/${INSTALLER_TAG}/scripts/install.sh"
+
+sh ./install.sh --channel beta --version vX.Y.Z-beta --add-to-path
+```
+
+便利命令会从 `main` 获取当前安装器，且 `--latest` 是会移动的引用。安装器会在下载前
+打印解析出的 tag；需要记录或复现安装时，请使用固定版本方式。在交互式终端中运行时，
+安装器会立即运行已安装的 `velum setup` 并进入首次配置。
 
 在下发配置、凭据文件和 PEM 材料后，以当前用户部署中继服务：
 

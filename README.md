@@ -40,14 +40,37 @@ installer: certificate, secret, DNS, firewall, monitoring, upgrade, and
 rollback provisioning remain operator responsibilities. Read the [operator
 guide](docs/velum-node.md) before using it.
 
-Install an explicitly selected beta or stable release by downloading its
-installer from the same immutable tag and running it locally:
+Choose a channel and paste its command. The installer resolves the latest
+published matching release itself:
 
 ```bash
 curl --fail --location --remote-name \
-  https://raw.githubusercontent.com/viloris-org/Velum/v0.0.1-beta/scripts/install.sh
-sh ./install.sh --channel beta --version v0.0.1-beta --add-to-path
+  https://raw.githubusercontent.com/viloris-org/Velum/main/scripts/install.sh && \
+sh ./install.sh --channel stable --latest --add-to-path
 ```
+
+```bash
+curl --fail --location --remote-name \
+  https://raw.githubusercontent.com/viloris-org/Velum/main/scripts/install.sh && \
+sh ./install.sh --channel beta --latest --add-to-path
+```
+
+For a reproducible installation, download a reviewed installer from a pinned
+tag and select the exact version:
+
+```bash
+INSTALLER_TAG='vX.Y.Z'
+curl --fail --location --remote-name \
+  "https://raw.githubusercontent.com/viloris-org/Velum/${INSTALLER_TAG}/scripts/install.sh"
+
+sh ./install.sh --channel beta --version vX.Y.Z-beta --add-to-path
+```
+
+The convenience commands fetch the current installer from `main`, and
+`--latest` is a moving reference. The installer prints the resolved tag before
+downloading it; use the pinned form when recording or reproducing an
+installation. When run from an interactive terminal, it starts the installed
+`velum setup` command and opens first-time setup immediately.
 
 After provisioning the configuration, credential file, and PEM material, deploy
 the relay as the current user:

@@ -82,15 +82,38 @@ x86_64/aarch64 and macOS x86_64/aarch64. Tags with a prerelease suffix, such as
 `v0.0.1-beta`, produce prereleases; `vX.Y.Z` tags produce stable releases.
 Install only an explicitly selected release:
 
-Download the installer from the same immutable tag as the requested release,
-review it, then run it locally. Do not execute an installer fetched from the
-moving `main` branch.
+Choose a channel and paste its command. The installer resolves the latest
+published matching release itself:
 
 ```bash
 curl --fail --location --remote-name \
-  https://raw.githubusercontent.com/viloris-org/Velum/v0.0.1-beta/scripts/install.sh
-sh ./install.sh --channel beta --version v0.0.1-beta --add-to-path
+  https://raw.githubusercontent.com/viloris-org/Velum/main/scripts/install.sh && \
+sh ./install.sh --channel stable --latest --add-to-path
 ```
+
+```bash
+curl --fail --location --remote-name \
+  https://raw.githubusercontent.com/viloris-org/Velum/main/scripts/install.sh && \
+sh ./install.sh --channel beta --latest --add-to-path
+```
+
+For a reproducible installation, download a reviewed installer from a pinned
+tag and select the exact version:
+
+```bash
+INSTALLER_TAG='vX.Y.Z'
+curl --fail --location --remote-name \
+  "https://raw.githubusercontent.com/viloris-org/Velum/${INSTALLER_TAG}/scripts/install.sh"
+
+sh ./install.sh --channel beta --version vX.Y.Z-beta --add-to-path
+```
+
+The convenience commands fetch the current installer from `main`, and
+`--latest` resolves a moving release reference. The installer prints the
+resolved tag before downloading it; use the pinned form for a recorded or
+reproducible installation. When run from an interactive terminal, the
+installer runs the installed `velum setup` command and opens first-time setup
+immediately.
 
 The script verifies the archive against the release `SHA256SUMS` before
 installing `velum` to `~/.local/bin`. This is integrity checking, not a

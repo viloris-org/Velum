@@ -31,6 +31,57 @@ Internet, no como una opción para ofuscar paquetes.
 Comience con el [índice de documentación](docs/README.md) y el
 [estado de implementación y hoja de ruta](docs/roadmap.md).
 
+## Operación Experimental
+
+La CLI de investigación `velum` puede validar una configuración ya preparada y
+desplegarla como un servicio de usuario de systemd con
+`velum deploy --config PATH`. Es una ayuda local para el ciclo de vida del
+proceso, no un instalador de infraestructura listo para producción: los
+certificados, secretos, DNS, cortafuegos, supervisión, actualizaciones y
+reversiones siguen siendo responsabilidad del operador. Lea la
+[guía del operador](docs/velum-node.md) antes de usarla.
+
+Elija un canal y pegue su comando. El instalador resuelve por sí mismo la
+versión publicada más reciente que corresponda:
+
+```bash
+curl --fail --location --remote-name \
+  https://raw.githubusercontent.com/viloris-org/Velum/main/scripts/install.sh && \
+sh ./install.sh --channel stable --latest --add-to-path
+```
+
+```bash
+curl --fail --location --remote-name \
+  https://raw.githubusercontent.com/viloris-org/Velum/main/scripts/install.sh && \
+sh ./install.sh --channel beta --latest --add-to-path
+```
+
+Para una instalación reproducible, descargue un instalador revisado desde una
+etiqueta fija y seleccione la versión exacta:
+
+```bash
+INSTALLER_TAG='vX.Y.Z'
+curl --fail --location --remote-name \
+  "https://raw.githubusercontent.com/viloris-org/Velum/${INSTALLER_TAG}/scripts/install.sh"
+
+sh ./install.sh --channel beta --version vX.Y.Z-beta --add-to-path
+```
+
+Los comandos de conveniencia obtienen el instalador actual desde `main`, y
+`--latest` es una referencia móvil. El instalador muestra la etiqueta resuelta
+antes de descargarla; use la forma fija para registrar o reproducir una
+instalación. Cuando se ejecuta en un terminal interactivo, inicia
+inmediatamente `velum setup` para la configuración inicial.
+
+Después de aprovisionar la configuración, el archivo de credenciales y el
+material PEM, despliegue el relé como usuario actual:
+
+```bash
+velum config validate --config /srv/velum/config.toml
+velum deploy --config /srv/velum/config.toml
+velum status --format json --config /srv/velum/config.toml
+```
+
 ## Validación Actual
 
 El repositorio fija Node 22.22.2 y Rust 1.97.0. Con `cargo-deny` 0.20.2

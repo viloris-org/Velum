@@ -7,14 +7,16 @@ version=''
 channel=''
 install_dir="${HOME}/.local/bin"
 add_to_path=false
+latest=false
 
 usage() {
     cat <<'EOF'
-Usage: install.sh --channel <beta|stable> --version <vX.Y.Z[-prerelease]> [--install-dir <directory>] [--add-to-path]
+Usage: install.sh --channel <beta|stable> (--version <vX.Y.Z[-prerelease]> | --latest) [--install-dir <directory>] [--add-to-path]
 
 Installs a checksum-verified Velum release from GitHub Releases.
 Beta releases are prereleases and do not establish a stable protocol or support
-commitment.
+commitment. --latest selects the most recently published matching release and
+is not reproducible; use --version for a pinned installation.
 
 --add-to-path appends ~/.local/bin to the login shell's startup file when the
 default install directory is used. It does not modify shell configuration by
@@ -31,6 +33,10 @@ while [ "$#" -gt 0 ]; do
         --channel)
             channel=${2:?missing channel value}
             shift 2
+            ;;
+        --latest)
+            latest=true
+            shift
             ;;
         --install-dir)
             install_dir=${2:?missing install directory value}
@@ -51,32 +57,20 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 
-if [ -z "$version" ]; then
-    echo 'error: --version is required' >&2
-    exit 2
-fi
-
 case "$channel" in
     beta|stable) ;;
     '') echo 'error: --channel beta or --channel stable is required' >&2; exit 2 ;;
     *) echo 'error: --channel must be beta or stable' >&2; exit 2 ;;
 esac
 
-if ! printf '%s\n' "$version" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$'; then
-    echo 'error: --version must name an explicit vX.Y.Z or vX.Y.Z-prerelease tag' >&2
+if [ "$latest" = true ] && [ -n "$version" ]; then
+    echo 'error: --version and --latest cannot be used together' >&2
     exit 2
 fi
-
-case "$channel:$version" in
-    beta:*-*) ;;
-    stable:v[0-9]*.[0-9]*.[0-9]*)
-        case "$version" in
-            *-*) echo 'error: stable releases cannot use a prerelease tag' >&2; exit 2 ;;
-        esac
-        ;;
-    beta:*) echo 'error: beta releases require a prerelease tag such as v0.0.1-beta' >&2; exit 2 ;;
-    *) echo 'error: stable releases require a vX.Y.Z tag' >&2; exit 2 ;;
-esac
+if [ "$latest" = false ] && [ -z "$version" ]; then
+    echo 'error: --version or --latest is required' >&2
+    exit 2
+fi
 
 if [ "$add_to_path" = true ] && [ "$install_dir" != "${HOME}/.local/bin" ]; then
     echo 'error: --add-to-path is supported only with the default ~/.local/bin install directory' >&2
@@ -101,8 +95,6 @@ case "$(uname -s)" in
     *) echo "error: unsupported operating system: $(uname -s)" >&2; exit 1 ;;
 esac
 
-archive="velum-${version}-${platform}.tar.gz"
-base_url="https://github.com/${repository}/releases/download/${version}"
 temporary_dir=$(mktemp -d)
 trap 'rm -rf "$temporary_dir"' EXIT HUP INT TERM
 
@@ -116,6 +108,51 @@ download() {
         exit 1
     fi
 }
+
+resolve_latest_version() {
+    releases="${temporary_dir}/releases.json"
+    download "https://api.github.com/repos/${repository}/releases?per_page=100" "$releases"
+    tags=$(grep -o '"tag_name"[[:space:]]*:[[:space:]]*"[^"]*"' "$releases" \
+        | sed 's/.*"\([^"]*\)"$/\1/' || true)
+
+    for candidate in $tags; do
+        if ! printf '%s\n' "$candidate" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$'; then
+            continue
+        fi
+        case "$channel:$candidate" in
+            beta:*-*) printf '%s\n' "$candidate"; return 0 ;;
+            stable:*-*) ;;
+            stable:*) printf '%s\n' "$candidate"; return 0 ;;
+        esac
+    done
+
+    echo "error: no published ${channel} release was found" >&2
+    exit 1
+}
+
+if [ "$latest" = true ]; then
+    version=$(resolve_latest_version)
+    printf 'Resolved latest %s release to %s\n' "$channel" "$version"
+fi
+
+if ! printf '%s\n' "$version" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$'; then
+    echo 'error: --version must name an explicit vX.Y.Z or vX.Y.Z-prerelease tag' >&2
+    exit 2
+fi
+
+case "$channel:$version" in
+    beta:*-*) ;;
+    stable:v[0-9]*.[0-9]*.[0-9]*)
+        case "$version" in
+            *-*) echo 'error: stable releases cannot use a prerelease tag' >&2; exit 2 ;;
+        esac
+        ;;
+    beta:*) echo 'error: beta releases require a prerelease tag such as v0.0.1-beta' >&2; exit 2 ;;
+    *) echo 'error: stable releases require a vX.Y.Z tag' >&2; exit 2 ;;
+esac
+
+archive="velum-${version}-${platform}.tar.gz"
+base_url="https://github.com/${repository}/releases/download/${version}"
 
 download "${base_url}/SHA256SUMS" "${temporary_dir}/SHA256SUMS"
 download "${base_url}/${archive}" "${temporary_dir}/${archive}"
@@ -163,3 +200,10 @@ if [ "$add_to_path" = true ]; then
 elif ! command -v velum >/dev/null 2>&1; then
     printf 'Run ~/.local/bin/velum, add ~/.local/bin to PATH, or rerun with --add-to-path.\n'
 fi
+
+if [ -t 0 ] && [ -t 1 ]; then
+    printf 'Starting Velum first-time setup...\n'
+    exec "${install_dir}/velum" setup
+fi
+
+printf 'No interactive terminal detected. Run %s/velum setup to start first-time setup.\n' "$install_dir"
