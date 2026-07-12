@@ -20,6 +20,7 @@ toml = "=0.8.23"
 x509-parser = "=0.18.1"
 velum-carrier-quic = { version = "0.0.0", path = "../../crates/velum-carrier-quic" }
 velum-forest = { version = "0.0.0", path = "../../crates/velum-forest" }
+velum-protocol = { version = "0.0.0", path = "../../crates/velum-protocol" }
 velum-server = { version = "0.0.0", path = "../../crates/velum-server" }
 velum-telemetry = { version = "0.0.0", path = "../../crates/velum-telemetry" }
 

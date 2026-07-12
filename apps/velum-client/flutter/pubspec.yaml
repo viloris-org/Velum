@@ -1,0 +1,20 @@
+name: velum_client
+description: Desktop controller for the experimental Velum relay client.
+publish_to: none
+version: 0.0.1+1
+
+environment:
+  sdk: ^3.8.0
+
+dependencies:
+  ffi: ^2.2.0
+  flutter:
+    sdk: flutter
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true

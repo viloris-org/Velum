@@ -299,8 +299,16 @@ pub fn load(path: &Path) -> Result<LoadedConfig, String> {
     };
     let certificates = read_certificates(&config.listener.certificate)?;
     let key = read_private_key(&config.listener.private_key)?;
-    let server_config = quinn::ServerConfig::with_single_cert(certificates, key)
+    let mut server_config = quinn::ServerConfig::with_single_cert(certificates, key)
         .map_err(|error| format!("invalid certificate or private key: {error}"))?;
+    let transport = relay
+        .transport_profile()
+        .map_err(|error| format!("invalid QUIC transport limits: {error:?}"))?
+        .build()
+        .map_err(|error| format!("invalid QUIC transport limits: {error:?}"))?;
+    server_config
+        .transport_config(transport)
+        .max_incoming(relay.max_connections);
     Ok(LoadedConfig {
         bind,
         admin_socket: config.admin.socket,

@@ -57,6 +57,24 @@ modules:
     risk: critical
     unsafe_allowed: false
 
+  client-api:
+    paths: ["crates/velum-client-api/**"]
+    owner: client-maintainers
+    may_depend_on: [carrier-quic, protocol, telemetry]
+    public_api: ["crates/velum-client-api/src/lib.rs"]
+    owns: [client-session-api, quic-client-lifecycle, stream-backpressure]
+    risk: critical
+    unsafe_allowed: false
+
+  client-ffi:
+    paths: ["crates/velum-client-ffi/**"]
+    owner: client-maintainers
+    may_depend_on: [client-api]
+    public_api: ["crates/velum-client-ffi/src/lib.rs"]
+    owns: [flutter-native-abi, opaque-handle-validation]
+    risk: critical
+    unsafe_allowed: reviewed-exception
+
   session:
     paths: ["crates/velum-session/**"]
     owner: protocol-maintainers
@@ -115,6 +133,7 @@ modules:
     paths: ["apps/**"]
     owner: release-maintainers
     may_depend_on:
+      - protocol
       - session
       - policy
       - forest
@@ -137,6 +156,10 @@ forbidden_dependencies:
     to: [carrier-tls, policy, session, forest]
   - from: carrier-tls
     to: [carrier-quic, policy, session, forest]
+  - from: client-api
+    to: [carrier-tls, crypto, forest, policy, server, session]
+  - from: client-ffi
+    to: [carrier-api, carrier-quic, carrier-tls, crypto, forest, policy, protocol, server, session, telemetry]
   - from: forest
     to: [crypto, protocol, session, policy]
   - from: policy

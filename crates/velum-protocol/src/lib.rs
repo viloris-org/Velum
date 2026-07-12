@@ -1,8 +1,13 @@
 //! Carrier-independent v0 protocol types and bounded frame codec.
 
+mod datagram;
 mod frame;
 mod types;
 
+pub use datagram::{
+    Datagram, DatagramDecodeError, DatagramEncodeError, DatagramSessionId, DatagramSessionIdError,
+    MAX_DATAGRAM_CREDENTIAL_BYTES, MAX_DATAGRAM_ENVELOPE_BYTES, MAX_DATAGRAM_PAYLOAD_BYTES,
+};
 pub use frame::{
     FRAME_HEADER_BYTES, Frame, FrameDecodeError, FrameDecoder, FrameEncodeError, MAX_FRAME_PAYLOAD,
 };

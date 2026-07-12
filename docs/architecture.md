@@ -7,8 +7,8 @@ wire format or crate layout.
 
 ```mermaid
 flowchart LR
-    App[Local applications] --> Adapter[SOCKS / CONNECT / TUN adapter]
-    Adapter --> Client[Velum client]
+    App[Flutter and native applications] --> ClientApi[Versioned client API]
+    ClientApi --> Client[Velum client engine]
     Client == encrypted carriers ==> Server[Velum server]
     Server --> Internet[Target services]
     Probe[Unauthenticated client or probe] --> Cover[Real cover service]
@@ -26,7 +26,8 @@ real service even when the Velum protocol is disabled.
 
 | Module | Owns | Must not own |
 |---|---|---|
-| `adapter` | Local SOCKS, CONNECT, or TUN integration; conversion into flow requests | Session keys, carrier selection, remote routing policy |
+| `client-api` | Direct in-process client sessions and stream backpressure | Local proxy listeners, session keys, server routing policy |
+| `client-ffi` | Flutter native ABI and opaque-handle validation | QUIC lifecycle, credential parsing, protocol state, or payload retention |
 | `protocol` | Frame encoding, decoding, version negotiation, and state-machine types | Sockets, timers, cryptographic implementations, routing decisions |
 | `session` | Logical session and flow identity, ordering, acknowledgements needed for migration, replay invariants | Network I/O details or camouflage behavior |
 | `carrier-api` | Narrow contract for opening, sending, receiving, health reporting, and closing carriers | QUIC- or TLS-specific code |
@@ -45,7 +46,8 @@ load-bearing.
 
 ```mermaid
 flowchart TD
-    adapter --> session
+    client-ffi --> client-api
+    client-api --> carrier-quic
     server --> session
     session --> protocol
     session --> crypto
@@ -55,7 +57,6 @@ flowchart TD
     carrier-quic --> carrier-api
     carrier-tls --> carrier-api
     forest --> carrier-api
-    adapter --> telemetry
     server --> telemetry
     session --> telemetry
     policy --> telemetry

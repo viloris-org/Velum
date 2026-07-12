@@ -26,11 +26,12 @@ pub mod admin;
 pub mod cli;
 pub mod config;
 mod cover_listener;
+mod datagram;
 pub mod deployment;
 mod listener;
 
-pub use listener::{bind_quic_listener, serve_quic_listener};
 pub use cover_listener::{bind_cover_listener, serve_cover_listener};
+pub use listener::{bind_quic_listener, serve_quic_listener};
 
 /// Versioned, application-owned configuration for the experimental QUIC
 /// listener. Secrets and certificates are supplied out of band.
@@ -68,6 +69,7 @@ pub enum ConfigError {
     ControlLimitTooSmall,
     ZeroConnectionLimit,
     ZeroStreamLimit,
+    StreamLimitTooLarge,
 }
 
 impl QuicRelayConfig {
@@ -94,6 +96,18 @@ impl QuicRelayConfig {
             return Err(ConfigError::ZeroStreamLimit);
         }
         Ok(())
+    }
+
+    /// Converts application flow limits into the QUIC transport limits that
+    /// constrain a peer before listener dispatch runs.
+    pub fn transport_profile(
+        &self,
+    ) -> Result<velum_carrier_quic::QuicTransportProfile, ConfigError> {
+        Ok(velum_carrier_quic::QuicTransportProfile {
+            max_bidirectional_streams: u32::try_from(self.max_streams_per_connection)
+                .map_err(|_| ConfigError::StreamLimitTooLarge)?,
+            ..Default::default()
+        })
     }
 }
 
@@ -134,6 +148,41 @@ pub struct ConnectionAdmission {
 }
 
 impl ConnectionAdmission {
+    pub async fn is_authenticated(&self) -> bool {
+        self.session.lock().await.is_some()
+    }
+
+    /// Authenticates one native datagram and binds this connection to its
+    /// principal before an association can be created. Datagram traffic does
+    /// not consume a reliable-flow quota.
+    pub(crate) async fn admit_datagram(
+        &self,
+        admission: &RelayAdmission,
+        credential: &[u8],
+        observer: &dyn RelayObserver,
+    ) -> Result<(), RelayError> {
+        let principal = admission
+            .authenticator
+            .authenticate(credential)
+            .map_err(|_| {
+                observer.record(QuicRelayEvent::AuthenticationRejected);
+                RelayError::AuthenticationRejected
+            })?;
+        let mut session = self.session.lock().await;
+        match *session {
+            Some(existing) if existing.principal != principal => {
+                observer.record(QuicRelayEvent::AuthenticationRejected);
+                Err(RelayError::AuthenticationRejected)
+            }
+            Some(_) => Ok(()),
+            None => {
+                let lease = open_session(&admission.quotas, principal, observer).await?;
+                *session = Some(AdmittedSession { principal, lease });
+                Ok(())
+            }
+        }
+    }
+
     async fn reserve_flow(
         &self,
         admission: &RelayAdmission,
@@ -338,6 +387,9 @@ async fn relay_parts(
         .await
         .map_err(|_| RelayError::ConnectFailed)?
         .map_err(|_| RelayError::ConnectFailed)?;
+    target
+        .set_nodelay(true)
+        .map_err(|_| RelayError::Transport)?;
     let (mut target_read, mut target_write) = target.split();
     let client_to_target = async {
         copy_quic_to_tcp(receive, &mut target_write).await?;
@@ -575,6 +627,62 @@ mod tests {
                 .await
                 .open_session(principal)
                 .is_ok()
+        );
+    }
+
+    #[tokio::test]
+    async fn datagram_admission_binds_the_connection_to_one_principal() {
+        let principal = PrincipalId(7);
+        let admission = RelayAdmission {
+            authenticator: Arc::new(
+                Authenticator::new([velum_server::PrincipalCredential::new(
+                    principal,
+                    vec![7; 32],
+                )
+                .expect("credential")])
+                .expect("authenticator"),
+            ),
+            destinations: Arc::new(DestinationPolicy::default()),
+            quotas: Arc::new(Mutex::new(AdmissionControl::new(
+                velum_server::PrincipalQuota {
+                    max_sessions: 1,
+                    max_flows_per_session: 1,
+                },
+            ))),
+        };
+        let connection = ConnectionAdmission::default();
+        let observer = NoopRelayObserver;
+
+        connection
+            .admit_datagram(&admission, &[7; 32], &observer)
+            .await
+            .expect("datagram credential");
+        assert!(connection.is_authenticated().await);
+        connection
+            .reserve_flow(&admission, principal, &observer)
+            .await
+            .expect("stream shares datagram session");
+        assert_eq!(
+            connection
+                .admit_datagram(&admission, &[8; 32], &observer)
+                .await,
+            Err(RelayError::AuthenticationRejected)
+        );
+        connection.close(&admission).await;
+    }
+
+    #[test]
+    fn transport_profile_matches_the_listener_stream_limit() {
+        let relay = QuicRelayConfig {
+            max_streams_per_connection: 7,
+            ..QuicRelayConfig::default()
+        };
+        assert_eq!(
+            relay
+                .transport_profile()
+                .expect("transport profile")
+                .max_bidirectional_streams,
+            7
         );
     }
 }

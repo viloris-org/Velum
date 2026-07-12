@@ -24,8 +24,7 @@ logical-session authentication.
 
 This document starts after an external authentication mechanism has supplied a
 session-specific attachment secret to both peers. It does not define session
-creation, credential provisioning, key rotation, cover-service routing, or
-datagram application payloads.
+creation, credential provisioning, key rotation, or cover-service routing.
 
 ## Canonical Encoding
 
@@ -47,6 +46,8 @@ payload bytes.
 | `capabilities` | `u64` bitset |
 | `attachment_proof` | `bytes[32]` |
 | `error_code` | `u16` |
+| `datagram_session_id` | Nonzero `u64` |
+| `datagram_credential` | `u8` length followed by 1 through 128 bytes |
 
 ### Frame Envelope
 
@@ -332,6 +333,45 @@ unacknowledged data under the current epoch with the same flow ID and segment
 sequence. The receiver's cursor suppresses a duplicate. This rule does not
 apply to datagrams and does not permit delivery cursor reconstruction after
 state loss.
+
+## Unreliable Datagram Envelopes
+
+When `UNRELIABLE_DATAGRAM` is negotiated on a native datagram carrier, an
+application datagram has this independent envelope. It is not a reliable frame
+and MUST NOT be sent on TLS.
+
+```text
+Client-to-server:
++----------------+-----------------------+------------------------------+--------------------------+
+| direction: u8  | credential_length: u8 | credential: bytes[length]    | datagram_session_id: u64 |
++----------------+-----------------------+------------------------------+--------------------------+
+| address_kind: u8 | address: bytes[4|16] | port: u16 | payload: bytes[remaining]                         |
++-----------------+----------------------+-----------+---------------------------------------------------+
+
+Server-to-client:
++----------------+--------------------------+----------------+---------------------+-------------------+
+| direction: u8  | datagram_session_id: u64 | address_kind:u8| address: bytes[4|16]| port: u16         |
++----------------+--------------------------+----------------+---------------------+-------------------+
+| payload: bytes[remaining]                                                                       |
++-------------------------------------------------------------------------------------------------+
+```
+
+Direction `0x01` is client-to-server and carries the destination address plus
+a credential whose length MUST be 1 through 128. Direction `0x02` is
+server-to-client, carries the source address, and omits both credential fields.
+Address kind `0x04` encodes IPv4 and `0x06` encodes IPv6. A session ID MUST be
+nonzero; hostnames, unknown directions, empty or over-limit credentials,
+unknown address kinds, and malformed envelopes are rejected before creating a
+UDP association. The server authenticates the credential before destination
+policy evaluation and binds the resulting principal to the carrier connection.
+Credentials remain inside carrier encryption and MUST NOT appear in a response,
+telemetry event, error, or log.
+
+The payload MAY be empty and is at most 60 KiB. This is a codec bound, not an
+MTU guarantee: a sender MUST compare the encoded envelope with the carrier's
+current maximum datagram payload and fail or drop locally when it will not fit.
+v0 defines no fragmentation, reassembly, ordering, acknowledgement,
+retransmission, or carrier-transition replay for application datagrams.
 
 ## Connection Close And Errors
 

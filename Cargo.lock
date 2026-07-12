@@ -1034,10 +1034,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1"
 
 [[package]]
-name = "velum-adapter-connect"
-version = "0.0.0"
-
-[[package]]
 name = "velum-carrier-api"
 version = "0.0.0"
 dependencies = [
@@ -1062,6 +1058,26 @@ dependencies = [
  "tokio-rustls",
  "velum-carrier-api",
  "velum-protocol",
+]
+
+[[package]]
+name = "velum-client-api"
+version = "0.0.0"
+dependencies = [
+ "quinn",
+ "rustls",
+ "tokio",
+ "velum-carrier-quic",
+ "velum-protocol",
+]
+
+[[package]]
+name = "velum-client-ffi"
+version = "0.0.0"
+dependencies = [
+ "rustls",
+ "tokio",
+ "velum-client-api",
 ]
 
 [[package]]
@@ -1091,6 +1107,8 @@ dependencies = [
  "tokio",
  "toml",
  "velum-carrier-quic",
+ "velum-forest",
+ "velum-protocol",
  "velum-server",
  "velum-telemetry",
  "x509-parser",

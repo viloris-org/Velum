@@ -12,10 +12,13 @@ use tokio::{
     time::timeout,
 };
 use velum_carrier_quic::{CarrierId, QuicCarrier};
+use velum_protocol::Datagram;
 use velum_telemetry::QuicRelayEvent;
 
 use crate::{
-    ConnectionAdmission, QuicRelayConfig, RelayAdmission, RelayObserver, admin::Control,
+    ConnectionAdmission, QuicRelayConfig, RelayAdmission, RelayObserver,
+    admin::Control,
+    datagram::{DatagramRelay, DatagramRelayError},
     relay_quic_stream,
 };
 
@@ -115,6 +118,9 @@ async fn serve_connection(
     observer: Arc<dyn RelayObserver>,
     status: Arc<crate::admin::RuntimeStatus>,
 ) {
+    let datagram_connection = connection.clone();
+    let datagrams = DatagramRelay::for_quic(connection.clone(), Default::default())
+        .expect("default datagram relay configuration is valid");
     let carrier = QuicCarrier::new(CarrierId(0), connection);
     let connection_admission = ConnectionAdmission::default();
     let stream_slots = Arc::new(Semaphore::new(config.max_streams_per_connection));
@@ -125,6 +131,7 @@ async fn serve_connection(
                 Ok(stream) => {
                     let Ok(slot) = Arc::clone(&stream_slots).try_acquire_owned() else {
                         observer.record(QuicRelayEvent::StreamRejected);
+                        stream.reject();
                         continue;
                     };
                     let admission = admission.clone();
@@ -148,10 +155,38 @@ async fn serve_connection(
                 }
                 Err(_) => break,
             },
+            datagram = datagram_connection.read_datagram() => match datagram {
+                Ok(datagram) => {
+                    let credential = match Datagram::decode(&datagram) {
+                        Ok(Datagram::ClientToServer { credential, .. }) => credential,
+                        _ => {
+                            observer.record(QuicRelayEvent::DatagramRejected);
+                            continue;
+                        }
+                    };
+                    if connection_admission
+                        .admit_datagram(&admission, &credential, observer.as_ref())
+                        .await
+                        .is_err()
+                    {
+                        observer.record(QuicRelayEvent::DatagramRejected);
+                        continue;
+                    }
+                    match datagrams.forward(&datagram, admission.destinations.as_ref()).await {
+                        Ok(()) => observer.record(QuicRelayEvent::DatagramRelayed),
+                        Err(DatagramRelayError::AssociationLimit) => {
+                            observer.record(QuicRelayEvent::DatagramAssociationLimit);
+                        }
+                        Err(_) => observer.record(QuicRelayEvent::DatagramRejected),
+                    }
+                }
+                Err(_) => break,
+            },
             Some(_) = flows.join_next(), if !flows.is_empty() => {}
         }
     }
 
+    datagrams.shutdown().await;
     while flows.join_next().await.is_some() {}
     connection_admission.close(&admission).await;
 }

@@ -3,15 +3,19 @@
 //! One authenticated TLS connection maps to one reliable byte stream. TLS has
 //! no datagram semantics, session authentication, or session delivery state.
 
-use std::sync::{
-    Arc, Mutex,
-    atomic::{AtomicBool, Ordering},
+use std::{
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
 };
 
 use rustls::{ClientConfig, ProtocolVersion, ServerConfig, pki_types::ServerName};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
+    time::timeout,
 };
 use tokio_rustls::{TlsAcceptor, TlsConnector, TlsStream as RustlsStream};
 use velum_carrier_api::{
@@ -19,10 +23,43 @@ use velum_carrier_api::{
     StreamRequest,
 };
 
+/// Bounds peer-controlled work before TLS authentication completes.
+///
+/// A TCP peer can otherwise keep a listener task and connection slot occupied
+/// indefinitely without sending a TLS ClientHello. The default matches the
+/// bounded handshake window used by the MIST reference implementation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TlsTransportProfile {
+    pub handshake_timeout: Duration,
+}
+
+impl Default for TlsTransportProfile {
+    fn default() -> Self {
+        Self {
+            handshake_timeout: Duration::from_secs(10),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TlsTransportProfileError {
+    ZeroHandshakeTimeout,
+}
+
+impl TlsTransportProfile {
+    pub fn validate(&self) -> Result<(), TlsTransportProfileError> {
+        if self.handshake_timeout.is_zero() {
+            return Err(TlsTransportProfileError::ZeroHandshakeTimeout);
+        }
+        Ok(())
+    }
+}
+
 /// A reliable byte stream carried by one TLS 1.3 over TCP connection.
 pub struct TlsStream {
     stream: RustlsStream<TcpStream>,
     closed: Arc<AtomicBool>,
+    healthy: Arc<AtomicBool>,
 }
 
 impl TlsStream {
@@ -30,10 +67,15 @@ impl TlsStream {
         if self.closed.load(Ordering::Acquire) {
             return Err(CarrierError::Closed);
         }
-        self.stream
+        let result = self
+            .stream
             .write_all(bytes)
             .await
-            .map_err(|_| CarrierError::Transport)
+            .map_err(|_| CarrierError::Transport);
+        if result.is_err() {
+            self.healthy.store(false, Ordering::Release);
+        }
+        result
     }
 
     pub async fn read_chunk(&mut self, maximum: usize) -> Result<Option<Vec<u8>>, CarrierError> {
@@ -44,12 +86,15 @@ impl TlsStream {
             return Ok(Some(Vec::new()));
         }
         let mut bytes = vec![0; maximum];
-        let read = self
-            .stream
-            .read(&mut bytes)
-            .await
-            .map_err(|_| CarrierError::Transport)?;
+        let read = match self.stream.read(&mut bytes).await {
+            Ok(read) => read,
+            Err(_) => {
+                self.healthy.store(false, Ordering::Release);
+                return Err(CarrierError::Transport);
+            }
+        };
         if read == 0 {
+            self.healthy.store(false, Ordering::Release);
             return Ok(None);
         }
         bytes.truncate(read);
@@ -60,10 +105,15 @@ impl TlsStream {
         if self.closed.load(Ordering::Acquire) {
             return Err(CarrierError::Closed);
         }
-        self.stream
+        let result = self
+            .stream
             .shutdown()
             .await
-            .map_err(|_| CarrierError::Transport)
+            .map_err(|_| CarrierError::Transport);
+        if result.is_err() {
+            self.healthy.store(false, Ordering::Release);
+        }
+        result
     }
 }
 
@@ -73,7 +123,7 @@ impl TlsStream {
 pub struct TlsCarrier {
     id: CarrierId,
     stream: Arc<Mutex<Option<TlsStream>>>,
-    healthy: Arc<Mutex<bool>>,
+    healthy: Arc<AtomicBool>,
     closed: Arc<AtomicBool>,
 }
 
@@ -84,10 +134,31 @@ impl TlsCarrier {
         config: Arc<ClientConfig>,
         server_name: ServerName<'static>,
     ) -> Result<Self, CarrierError> {
-        let stream = TlsConnector::from(config)
-            .connect(server_name, tcp)
-            .await
-            .map_err(|_| CarrierError::Transport)?;
+        Self::connect_with_profile(
+            id,
+            tcp,
+            config,
+            server_name,
+            &TlsTransportProfile::default(),
+        )
+        .await
+    }
+
+    pub async fn connect_with_profile(
+        id: CarrierId,
+        tcp: TcpStream,
+        config: Arc<ClientConfig>,
+        server_name: ServerName<'static>,
+        profile: &TlsTransportProfile,
+    ) -> Result<Self, CarrierError> {
+        profile.validate().map_err(|_| CarrierError::Transport)?;
+        let stream = timeout(
+            profile.handshake_timeout,
+            TlsConnector::from(config).connect(server_name, tcp),
+        )
+        .await
+        .map_err(|_| CarrierError::Transport)?
+        .map_err(|_| CarrierError::Transport)?;
         if stream.get_ref().1.protocol_version() != Some(ProtocolVersion::TLSv1_3) {
             return Err(CarrierError::Transport);
         }
@@ -99,10 +170,23 @@ impl TlsCarrier {
         tcp: TcpStream,
         config: Arc<ServerConfig>,
     ) -> Result<Self, CarrierError> {
-        let stream = TlsAcceptor::from(config)
-            .accept(tcp)
-            .await
-            .map_err(|_| CarrierError::Transport)?;
+        Self::accept_with_profile(id, tcp, config, &TlsTransportProfile::default()).await
+    }
+
+    pub async fn accept_with_profile(
+        id: CarrierId,
+        tcp: TcpStream,
+        config: Arc<ServerConfig>,
+        profile: &TlsTransportProfile,
+    ) -> Result<Self, CarrierError> {
+        profile.validate().map_err(|_| CarrierError::Transport)?;
+        let stream = timeout(
+            profile.handshake_timeout,
+            TlsAcceptor::from(config).accept(tcp),
+        )
+        .await
+        .map_err(|_| CarrierError::Transport)?
+        .map_err(|_| CarrierError::Transport)?;
         if stream.get_ref().1.protocol_version() != Some(ProtocolVersion::TLSv1_3) {
             return Err(CarrierError::Transport);
         }
@@ -111,13 +195,15 @@ impl TlsCarrier {
 
     fn new(id: CarrierId, stream: RustlsStream<TcpStream>) -> Self {
         let closed = Arc::new(AtomicBool::new(false));
+        let healthy = Arc::new(AtomicBool::new(true));
         Self {
             id,
             stream: Arc::new(Mutex::new(Some(TlsStream {
                 stream,
                 closed: Arc::clone(&closed),
+                healthy: Arc::clone(&healthy),
             }))),
-            healthy: Arc::new(Mutex::new(true)),
+            healthy,
             closed,
         }
     }
@@ -149,11 +235,10 @@ impl Carrier for TlsCarrier {
     }
 
     fn health(&self) -> CarrierHealth {
-        let is_healthy = self.healthy.lock().map(|healthy| *healthy).unwrap_or(false);
         CarrierHealth {
             round_trip_time_millis: None,
             loss_parts_per_million: None,
-            is_healthy,
+            is_healthy: self.healthy.load(Ordering::Acquire),
         }
     }
 
@@ -178,15 +263,13 @@ impl Carrier for TlsCarrier {
         if let Ok(mut stream) = self.stream.lock() {
             stream.take();
         }
-        if let Ok(mut healthy) = self.healthy.lock() {
-            *healthy = false;
-        }
+        self.healthy.store(false, Ordering::Release);
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::{sync::Arc, time::Duration};
 
     use rcgen::CertifiedKey;
     use rustls::{
@@ -219,6 +302,73 @@ mod tests {
                 .with_root_certificates(roots)
                 .with_no_client_auth(),
         )
+    }
+
+    #[test]
+    fn transport_profile_rejects_an_unbounded_handshake() {
+        let profile = TlsTransportProfile {
+            handshake_timeout: Duration::ZERO,
+        };
+
+        assert_eq!(
+            profile.validate(),
+            Err(TlsTransportProfileError::ZeroHandshakeTimeout)
+        );
+    }
+
+    #[tokio::test]
+    async fn client_handshake_times_out_when_a_tcp_peer_never_speaks_tls() {
+        let CertifiedKey { cert, .. } =
+            rcgen::generate_simple_self_signed(vec!["localhost".into()]).expect("certificate");
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
+        let address = listener.local_addr().expect("address");
+        let peer = tokio::spawn(async move {
+            let (_tcp, _) = listener.accept().await.expect("accept");
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        });
+        let tcp = TcpStream::connect(address).await.expect("connect");
+        let profile = TlsTransportProfile {
+            handshake_timeout: Duration::from_millis(25),
+        };
+
+        let result = TlsCarrier::connect_with_profile(
+            CarrierId(1),
+            tcp,
+            client_config(cert.der().clone()),
+            ServerName::try_from("localhost").expect("name").to_owned(),
+            &profile,
+        )
+        .await;
+
+        assert!(matches!(result, Err(CarrierError::Transport)));
+        peer.abort();
+    }
+
+    #[tokio::test]
+    async fn server_handshake_times_out_when_a_tcp_peer_never_speaks_tls() {
+        let CertifiedKey { cert, signing_key } =
+            rcgen::generate_simple_self_signed(vec!["localhost".into()]).expect("certificate");
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
+        let address = listener.local_addr().expect("address");
+        let peer = tokio::spawn(async move {
+            let _tcp = TcpStream::connect(address).await.expect("connect");
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        });
+        let (tcp, _) = listener.accept().await.expect("accept");
+        let profile = TlsTransportProfile {
+            handshake_timeout: Duration::from_millis(25),
+        };
+
+        let result = TlsCarrier::accept_with_profile(
+            CarrierId(2),
+            tcp,
+            server_config(cert.der().clone(), signing_key.into()),
+            &profile,
+        )
+        .await;
+
+        assert!(matches!(result, Err(CarrierError::Transport)));
+        peer.abort();
     }
 
     #[tokio::test]
@@ -267,6 +417,8 @@ mod tests {
             .expect("stream");
         stream.write_all(b"ping").await.expect("write");
         assert_eq!(stream.read_chunk(32).await, Ok(Some(b"pong".to_vec())));
+        assert_eq!(stream.read_chunk(32).await, Ok(None));
+        assert!(!carrier.health().is_healthy);
         assert!(matches!(
             carrier
                 .open_reliable_stream(StreamRequest {

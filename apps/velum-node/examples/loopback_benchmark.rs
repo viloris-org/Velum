@@ -72,7 +72,7 @@ impl BenchmarkServer {
     }
 }
 
-#[tokio::main(flavor = "current_thread")]
+#[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<(), Box<dyn Error>> {
     let (mode, payload_bytes, rounds, target_nodelay) = arguments()?;
 
