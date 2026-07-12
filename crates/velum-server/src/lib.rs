@@ -13,6 +13,7 @@ pub struct PrincipalId(pub u64);
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AuthenticationError {
     InvalidCredential,
+    DuplicateCredential,
     DuplicatePrincipal,
     InconsistentCredentialLength,
 }
@@ -42,7 +43,7 @@ impl Authenticator {
     pub fn new(
         credentials: impl IntoIterator<Item = PrincipalCredential>,
     ) -> Result<Self, AuthenticationError> {
-        let mut configured = BTreeMap::new();
+        let mut configured: BTreeMap<PrincipalId, Vec<u8>> = BTreeMap::new();
         let mut secret_length = None;
         for credential in credentials {
             if let Some(expected) = secret_length
@@ -51,6 +52,12 @@ impl Authenticator {
                 return Err(AuthenticationError::InconsistentCredentialLength);
             }
             secret_length = Some(credential.secret.len());
+            if configured
+                .values()
+                .any(|existing| bool::from(existing.as_slice().ct_eq(credential.secret.as_slice())))
+            {
+                return Err(AuthenticationError::DuplicateCredential);
+            }
             if configured
                 .insert(credential.principal, credential.secret)
                 .is_some()
@@ -232,6 +239,19 @@ mod tests {
         assert!(matches!(
             Authenticator::new(credentials),
             Err(AuthenticationError::InconsistentCredentialLength)
+        ));
+    }
+
+    #[test]
+    fn credentials_must_not_share_a_secret() {
+        let credentials = [
+            PrincipalCredential::new(PrincipalId(1), vec![1, 2, 3]).expect("credential"),
+            PrincipalCredential::new(PrincipalId(2), vec![1, 2, 3]).expect("credential"),
+        ];
+
+        assert!(matches!(
+            Authenticator::new(credentials),
+            Err(AuthenticationError::DuplicateCredential)
         ));
     }
 

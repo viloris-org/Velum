@@ -53,7 +53,9 @@ impl TransitionPolicy {
         consecutive_recovered: u32,
         last_transition_at_millis: Option<u64>,
     ) -> TransitionDecision {
-        if fallback.kind != CarrierKind::Tls || !fallback.health.is_healthy {
+        if active == CarrierKind::Quic
+            && (fallback.kind != CarrierKind::Tls || !fallback.health.is_healthy)
+        {
             return TransitionDecision::Stay;
         }
         if last_transition_at_millis.is_some_and(|last| {
@@ -176,6 +178,25 @@ mod tests {
                 0,
                 2,
                 Some(100),
+            ),
+            TransitionDecision::Transition {
+                mode: FallbackMode::Cold,
+                reason: TransitionReason::PrimaryRecovered,
+                to: CarrierKind::Quic,
+            }
+        );
+    }
+
+    #[test]
+    fn recovery_does_not_depend_on_the_failed_tls_fallback() {
+        assert_eq!(
+            policy(FallbackMode::Cold).decide(
+                CarrierKind::Tls,
+                observation(CarrierKind::Quic, true, 250),
+                observation(CarrierKind::Tls, false, 250),
+                0,
+                2,
+                None,
             ),
             TransitionDecision::Transition {
                 mode: FallbackMode::Cold,

@@ -51,8 +51,9 @@ pub enum TraceError {
     FlowLimit,
     PendingSegmentLimit,
     PendingByteLimit,
-    FlowTimedOut,
+    FlowHasPendingSegments,
     InvalidAcknowledgement,
+    TransitionInProgress,
     StaleEpoch,
     FutureEpoch,
 }
@@ -90,7 +91,6 @@ struct ReliableFlow {
     next_receive: Sequence,
     pending: VecDeque<PendingSegment>,
     pending_bytes: usize,
-    timed_out: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -149,11 +149,21 @@ impl SessionTracer {
                 next_receive: Sequence(0),
                 pending: VecDeque::new(),
                 pending_bytes: 0,
-                timed_out: false,
             },
         );
         self.record_event(SessionEvent::FlowOpened);
         Ok(flow_id)
+    }
+
+    /// Releases a completed or timed-out flow slot. Callers must retain any
+    /// late-packet handling they require before closing the flow.
+    pub fn close_reliable_flow(&mut self, flow_id: FlowId) -> Result<(), TraceError> {
+        let flow = self.flows.get(&flow_id).ok_or(TraceError::UnknownFlow)?;
+        if !flow.pending.is_empty() {
+            return Err(TraceError::FlowHasPendingSegments);
+        }
+        self.flows.remove(&flow_id);
+        Ok(())
     }
 
     pub fn send(&mut self, flow_id: FlowId, bytes: Vec<u8>) -> Result<Segment, TraceError> {
@@ -162,9 +172,6 @@ impl SessionTracer {
             .flows
             .get_mut(&flow_id)
             .ok_or(TraceError::UnknownFlow)?;
-        if flow.timed_out {
-            return Err(TraceError::FlowTimedOut);
-        }
         if flow.pending.len() == self.limits.max_pending_segments {
             self.record_event(SessionEvent::PendingLimitReached);
             return Err(TraceError::PendingSegmentLimit);
@@ -203,9 +210,6 @@ impl SessionTracer {
             .flows
             .get_mut(&acknowledgement.flow_id)
             .ok_or(TraceError::UnknownFlow)?;
-        if flow.timed_out {
-            return Err(TraceError::FlowTimedOut);
-        }
         if acknowledgement.through.0 >= flow.next_send.0 {
             return Err(TraceError::InvalidAcknowledgement);
         }
@@ -232,9 +236,6 @@ impl SessionTracer {
             .flows
             .get_mut(&segment.flow_id)
             .ok_or(TraceError::UnknownFlow)?;
-        if flow.timed_out {
-            return Err(TraceError::FlowTimedOut);
-        }
         if segment.sequence < flow.next_receive {
             self.record_event(SessionEvent::DuplicateIgnored);
             return Ok(ReceiveResult::Duplicate);
@@ -282,7 +283,7 @@ impl SessionTracer {
             .ok_or(TraceError::UnknownFlow)
     }
 
-    /// Advances deterministic time and terminates flows whose oldest
+    /// Advances deterministic time and removes flows whose oldest
     /// unacknowledged segment exceeded its configured lifetime.
     pub fn advance_time(&mut self, ticks: u64) -> Vec<FlowId> {
         self.tick = self
@@ -290,18 +291,17 @@ impl SessionTracer {
             .checked_add(ticks)
             .expect("session tick exhausted");
         let mut timed_out = Vec::new();
-        for (flow_id, flow) in &mut self.flows {
-            if !flow.timed_out
-                && flow
-                    .pending
-                    .front()
-                    .is_some_and(|pending| pending.expires_at <= self.tick)
+        for (flow_id, flow) in &self.flows {
+            if flow
+                .pending
+                .front()
+                .is_some_and(|pending| pending.expires_at <= self.tick)
             {
-                flow.pending.clear();
-                flow.pending_bytes = 0;
-                flow.timed_out = true;
                 timed_out.push(*flow_id);
             }
+        }
+        for flow_id in &timed_out {
+            self.flows.remove(flow_id);
         }
         for _ in &timed_out {
             self.record_event(SessionEvent::FlowTimedOut);
@@ -315,8 +315,10 @@ impl SessionTracer {
 
     /// Opens a one-epoch receive window for segments and acknowledgements
     /// still in flight on the retiring carrier.
-    pub fn begin_transition(&mut self) -> Epoch {
-        self.transition.advance()
+    pub fn begin_transition(&mut self) -> Result<Epoch, TraceError> {
+        self.transition
+            .advance()
+            .ok_or(TraceError::TransitionInProgress)
     }
 
     /// Records an explainable carrier change without exporting transport
@@ -326,13 +328,14 @@ impl SessionTracer {
         from: CarrierKind,
         to: CarrierKind,
         reason: TransitionReason,
-    ) -> Epoch {
+    ) -> Result<Epoch, TraceError> {
+        let epoch = self.begin_transition()?;
         self.record_event(SessionEvent::TransitionStarted {
             from: carrier_class(from),
             to: carrier_class(to),
             reason,
         });
-        self.begin_transition()
+        Ok(epoch)
     }
 
     pub fn negotiate_transition_version(
@@ -359,9 +362,9 @@ impl SessionTracer {
         match self.transition.validate(attachment.epoch) {
             EpochValidity::Current => {}
             EpochValidity::Retiring | EpochValidity::Stale => {
-                return Err(AttachmentError::StaleEpoch);
+                return self.reject_attachment(AttachmentError::StaleEpoch);
             }
-            EpochValidity::Future => return Err(AttachmentError::FutureEpoch),
+            EpochValidity::Future => return self.reject_attachment(AttachmentError::FutureEpoch),
         }
         authenticator
             .verify(
@@ -370,9 +373,10 @@ impl SessionTracer {
                 attachment.epoch,
                 attachment.proof,
             )
-            .map_err(AttachmentError::Authentication)?;
+            .map_err(AttachmentError::Authentication)
+            .or_else(|error| self.reject_attachment(error))?;
         if !self.attachment_replay.accept(attachment.epoch) {
-            return Err(AttachmentError::Replay);
+            return self.reject_attachment(AttachmentError::Replay);
         }
         Ok(())
     }
@@ -389,6 +393,13 @@ impl SessionTracer {
             EpochValidity::Stale => Err(TraceError::StaleEpoch),
             EpochValidity::Future => Err(TraceError::FutureEpoch),
         }
+    }
+
+    fn reject_attachment<T>(&mut self, error: AttachmentError) -> Result<T, AttachmentError> {
+        self.record_event(SessionEvent::TransitionRejected {
+            reason: TransitionRejection::AttachmentRejected,
+        });
+        Err(error)
     }
 
     fn record_event(&mut self, event: SessionEvent) {
@@ -449,8 +460,14 @@ mod tests {
             session.authenticate_carrier_attachment(&authenticator, session_id, first),
             Err(AttachmentError::Replay)
         );
+        assert_eq!(
+            session.events(),
+            &[SessionEvent::TransitionRejected {
+                reason: TransitionRejection::AttachmentRejected,
+            }]
+        );
 
-        assert_eq!(session.begin_transition(), Epoch(1));
+        assert_eq!(session.begin_transition(), Ok(Epoch(1)));
         let (_, _, second) = attachment(Epoch(1), CarrierId(2));
         assert_eq!(
             session.authenticate_carrier_attachment(&authenticator, session_id, second),
@@ -472,7 +489,7 @@ mod tests {
                 AttachmentAuthenticationError::InvalidProof
             ))
         ));
-        assert_eq!(session.begin_transition(), Epoch(1));
+        assert_eq!(session.begin_transition(), Ok(Epoch(1)));
         assert_eq!(
             session.authenticate_carrier_attachment(&authenticator, session_id, first),
             Err(AttachmentError::StaleEpoch)
@@ -481,6 +498,16 @@ mod tests {
         assert_eq!(
             session.authenticate_carrier_attachment(&authenticator, session_id, future),
             Err(AttachmentError::FutureEpoch)
+        );
+    }
+
+    #[test]
+    fn transitions_cannot_overlap_the_retiring_epoch_window() {
+        let mut session = tracer();
+        assert_eq!(session.begin_transition(), Ok(Epoch(1)));
+        assert_eq!(
+            session.begin_transition(),
+            Err(TraceError::TransitionInProgress)
         );
     }
 
@@ -549,18 +576,48 @@ mod tests {
     }
 
     #[test]
-    fn pending_timeout_releases_memory_by_terminating_the_flow() {
-        let mut session = tracer();
+    fn pending_timeout_removes_the_flow_and_releases_its_session_slot() {
+        let mut session = SessionTracer::new(
+            Epoch(0),
+            FlowLimits {
+                max_flows: 1,
+                max_pending_segments: 2,
+                max_pending_bytes: 3,
+                max_pending_age: 2,
+                max_events: 3,
+            },
+        );
         let flow = session.open_reliable_flow().expect("open flow");
         session.send(flow, vec![1, 2, 3]).expect("send");
         assert!(session.advance_time(1).is_empty());
         assert_eq!(session.advance_time(1), vec![flow]);
-        assert!(session.pending(flow).expect("pending").is_empty());
-        assert_eq!(session.send(flow, vec![4]), Err(TraceError::FlowTimedOut));
+        assert_eq!(session.pending(flow), Err(TraceError::UnknownFlow));
+        assert_eq!(session.open_reliable_flow(), Ok(FlowId(1)));
         assert_eq!(
             session.events(),
-            &[SessionEvent::FlowOpened, SessionEvent::FlowTimedOut]
+            &[
+                SessionEvent::FlowOpened,
+                SessionEvent::FlowTimedOut,
+                SessionEvent::FlowOpened,
+            ]
         );
+    }
+
+    #[test]
+    fn closed_flows_release_their_session_slot() {
+        let mut session = SessionTracer::new(
+            Epoch(0),
+            FlowLimits {
+                max_flows: 1,
+                max_pending_segments: 1,
+                max_pending_bytes: 1,
+                max_pending_age: 1,
+                max_events: 1,
+            },
+        );
+        let first = session.open_reliable_flow().expect("first flow");
+        session.close_reliable_flow(first).expect("close flow");
+        assert_eq!(session.open_reliable_flow(), Ok(FlowId(1)));
     }
 
     #[test]
@@ -608,7 +665,7 @@ mod tests {
         assert_eq!(first.flow_id, flow);
         assert_eq!(first.epoch, Epoch(0));
 
-        assert_eq!(session.begin_transition(), Epoch(1));
+        assert_eq!(session.begin_transition(), Ok(Epoch(1)));
         assert_eq!(
             session.receive(first.clone()),
             Ok(ReceiveResult::Delivered(vec![1]))
@@ -622,7 +679,7 @@ mod tests {
         let mut session = tracer();
         let flow = session.open_reliable_flow().expect("open flow");
         session.send(flow, vec![1]).expect("first");
-        session.begin_transition();
+        session.begin_transition().expect("begin transition");
         session
             .acknowledge(Acknowledgement {
                 flow_id: flow,
@@ -654,7 +711,7 @@ mod tests {
                 through: Sequence(0),
             })
             .expect("acknowledge first");
-        assert_eq!(session.begin_transition(), Epoch(1));
+        assert_eq!(session.begin_transition(), Ok(Epoch(1)));
         assert_eq!(
             session.resume_unacknowledged(flow).expect("resume"),
             vec![Segment {
@@ -699,7 +756,7 @@ mod tests {
                 CarrierKind::Tls,
                 TransitionReason::PrimaryUnhealthy,
             ),
-            Epoch(1)
+            Ok(Epoch(1))
         );
         session.complete_transition();
         assert_eq!(
@@ -720,7 +777,7 @@ mod tests {
         let mut session = tracer();
         let flow = session.open_reliable_flow().expect("open flow");
         session.send(flow, vec![0]).expect("old epoch segment");
-        assert_eq!(session.begin_transition(), Epoch(1));
+        assert_eq!(session.begin_transition(), Ok(Epoch(1)));
         session.send(flow, vec![1]).expect("current epoch segment");
 
         assert_eq!(

@@ -80,8 +80,8 @@ fn run_trial(seed: u64) -> u64 {
         expected.extend_from_slice(&bytes);
         let segment = sender.send(sender_flow, bytes).expect("within limits");
         if index + 1 == transition_after {
-            assert_eq!(sender.begin_transition(), Epoch(1));
-            assert_eq!(receiver.begin_transition(), Epoch(1));
+            assert_eq!(sender.begin_transition(), Ok(Epoch(1)));
+            assert_eq!(receiver.begin_transition(), Ok(Epoch(1)));
         }
         if random.next() & 1 == 0 {
             carrier.set_available(false);

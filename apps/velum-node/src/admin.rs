@@ -10,6 +10,7 @@ use std::{
 };
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+const MAX_REQUEST_BYTES: usize = 32;
 const RUNNING: u8 = 0;
 const DRAINING: u8 = 1;
 const STOPPING: u8 = 2;
@@ -17,14 +18,14 @@ const STOPPING: u8 = 2;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{UnixListener, UnixStream},
-    sync::mpsc,
+    sync::{mpsc, oneshot},
     task::JoinHandle,
 };
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Debug)]
 pub enum Control {
     Drain,
-    Reload,
+    Reload(oneshot::Sender<Result<(), String>>),
     Shutdown,
 }
 
@@ -55,6 +56,7 @@ impl RuntimeStatus {
 
     fn render(&self, bind: &str, started: Instant, json: bool) -> String {
         let state = match self.phase.load(Ordering::Relaxed) {
+            RUNNING => "running",
             DRAINING => "draining",
             STOPPING => "stopping",
             _ => "running",
@@ -135,9 +137,13 @@ pub fn spawn(
 }
 
 pub async fn request(path: &Path, request: &str) -> Result<String, String> {
-    tokio::time::timeout(REQUEST_TIMEOUT, request_inner(path, request))
+    let response = tokio::time::timeout(REQUEST_TIMEOUT, request_inner(path, request))
         .await
-        .map_err(|_| format!("admin request to {} timed out", path.display()))?
+        .map_err(|_| format!("admin request to {} timed out", path.display()))??;
+    if let Some(error) = response.strip_prefix("error=") {
+        return Err(error.trim().to_owned());
+    }
+    Ok(response)
 }
 
 async fn request_inner(path: &Path, request: &str) -> Result<String, String> {
@@ -167,12 +173,8 @@ async fn handle(
     controls: mpsc::Sender<Control>,
     status: Arc<RuntimeStatus>,
 ) -> Result<(), String> {
-    let mut request = vec![0; 32];
-    let read = stream
-        .read(&mut request)
-        .await
-        .map_err(|error| format!("cannot read admin request: {error}"))?;
-    let response = match std::str::from_utf8(&request[..read]).unwrap_or("").trim() {
+    let request = read_request(&mut stream).await;
+    let response = match request.as_deref().unwrap_or("") {
         "status" => status.render(&bind, started, false),
         "status json" => status.render(&bind, started, true),
         "drain" => match controls.send(Control::Drain).await {
@@ -182,10 +184,7 @@ async fn handle(
             }
             Err(_) => "stopping\n".into(),
         },
-        "reload" => match controls.send(Control::Reload).await {
-            Ok(()) => "reloading\n".into(),
-            Err(_) => "stopping\n".into(),
-        },
+        "reload" => reload(controls).await,
         "shutdown" => match controls.send(Control::Shutdown).await {
             Ok(()) => {
                 status.set_phase(STOPPING);
@@ -193,12 +192,49 @@ async fn handle(
             }
             Err(_) => "stopping\n".into(),
         },
+        _ if request.is_err() => "error=invalid request\n".into(),
         _ => "error=unknown command\n".into(),
     };
     stream
         .write_all(response.as_bytes())
         .await
         .map_err(|error| format!("cannot write admin response: {error}"))
+}
+
+async fn reload(controls: mpsc::Sender<Control>) -> String {
+    let (completion, result) = oneshot::channel();
+    if controls.send(Control::Reload(completion)).await.is_err() {
+        return "error=reload unavailable\n".into();
+    }
+    match tokio::time::timeout(REQUEST_TIMEOUT, result).await {
+        Ok(Ok(Ok(()))) => "reloaded\n".into(),
+        _ => "error=reload failed\n".into(),
+    }
+}
+
+async fn read_request(stream: &mut UnixStream) -> Result<String, String> {
+    tokio::time::timeout(REQUEST_TIMEOUT, async {
+        let mut request = Vec::with_capacity(MAX_REQUEST_BYTES);
+        loop {
+            let mut byte = [0_u8; 1];
+            let read = stream
+                .read(&mut byte)
+                .await
+                .map_err(|error| format!("cannot read admin request: {error}"))?;
+            if read == 0 {
+                return Err("admin request ended before newline".into());
+            }
+            if byte[0] == b'\n' {
+                return String::from_utf8(request).map_err(|_| "admin request is not UTF-8".into());
+            }
+            if request.len() == MAX_REQUEST_BYTES {
+                return Err("admin request is too long".into());
+            }
+            request.push(byte[0]);
+        }
+    })
+    .await
+    .map_err(|_| "admin request timed out".to_owned())?
 }
 
 #[cfg(unix)]
@@ -255,6 +291,7 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::*;
+    use tokio::net::UnixStream;
 
     #[tokio::test]
     async fn status_and_shutdown_are_local_socket_operations() {
@@ -291,6 +328,64 @@ mod tests {
             "stopping\n"
         );
         assert!(matches!(receiver.recv().await, Some(Control::Shutdown)));
+        server.stop();
+        let _ = std::fs::remove_dir(directory);
+    }
+
+    #[tokio::test]
+    async fn fragmented_commands_are_read_to_the_newline_boundary() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!("velum-admin-{unique}"));
+        let path = directory.join("admin.sock");
+        let (sender, mut receiver) = mpsc::channel(1);
+        let Ok(server) = spawn(
+            path.clone(),
+            "127.0.0.1:4433".into(),
+            sender,
+            Arc::new(RuntimeStatus::default()),
+        ) else {
+            return;
+        };
+
+        let mut client = UnixStream::connect(&path).await.expect("connect");
+        client.write_all(b"shut").await.expect("first fragment");
+        client.write_all(b"down\n").await.expect("second fragment");
+        let mut response = Vec::new();
+        client.read_to_end(&mut response).await.expect("response");
+        assert_eq!(response, b"stopping\n");
+        assert!(matches!(receiver.recv().await, Some(Control::Shutdown)));
+        server.stop();
+        let _ = std::fs::remove_dir(directory);
+    }
+
+    #[tokio::test]
+    async fn reload_reports_listener_rejection_to_the_caller() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!("velum-admin-{unique}"));
+        let path = directory.join("admin.sock");
+        let (sender, mut receiver) = mpsc::channel(1);
+        let Ok(server) = spawn(
+            path.clone(),
+            "127.0.0.1:4433".into(),
+            sender,
+            Arc::new(RuntimeStatus::default()),
+        ) else {
+            return;
+        };
+        let responder = tokio::spawn(async move {
+            if let Some(Control::Reload(completion)) = receiver.recv().await {
+                let _ = completion.send(Err("invalid configuration".into()));
+            }
+        });
+
+        assert_eq!(request(&path, "reload").await, Err("reload failed".into()));
+        responder.await.expect("responder");
         server.stop();
         let _ = std::fs::remove_dir(directory);
     }

@@ -140,7 +140,7 @@ pub fn default_admin_socket_for(config_path: &Path) -> PathBuf {
         config_path
             .parent()
             .unwrap_or_else(|| Path::new("."))
-            .join("admin.sock")
+            .join(".velum-admin/admin.sock")
     }
 }
 
@@ -292,6 +292,7 @@ pub fn read_certificates(path: &Path) -> Result<Vec<CertificateDer<'static>>, St
 }
 
 pub fn read_private_key(path: &Path) -> Result<PrivateKeyDer<'static>, String> {
+    verify_private_file(path)?;
     let file = File::open(path)
         .map_err(|error| format!("cannot read private key {}: {error}", path.display()))?;
     PrivateKeyDer::from_pem_reader(BufReader::new(file))
@@ -310,7 +311,28 @@ pub fn certificate_expiry(path: &Path) -> Result<(String, i64), String> {
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|error| format!("system clock precedes Unix epoch: {error}"))?
         .as_secs() as i64;
-    Ok((expires.to_string(), (expires.timestamp() - now) / 86_400))
+    Ok((
+        expires.to_string(),
+        (expires.timestamp() - now).div_euclid(86_400),
+    ))
+}
+
+fn verify_private_file(path: &Path) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = fs::metadata(path)
+            .map_err(|error| format!("cannot inspect private key {}: {error}", path.display()))?
+            .permissions()
+            .mode();
+        if mode & 0o077 != 0 {
+            return Err(format!(
+                "private key {} must not be group or world readable",
+                path.display()
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn read_secret(path: &Path) -> Result<Vec<u8>, String> {
@@ -395,10 +417,30 @@ mod tests {
             decoded.credentials[0].secret_file,
             Path::new("/tmp/velum/credential.hex")
         );
+        assert_eq!(
+            decoded.admin.socket,
+            Path::new("/tmp/velum/.velum-admin/admin.sock")
+        );
     }
 
     #[test]
     fn rejects_non_hex_secrets() {
         assert!(decode_secret("not-hex").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_a_group_or_world_readable_private_key() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("velum-private-key-{unique}"));
+        fs::write(&path, b"not a key").expect("key");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).expect("permissions");
+        assert!(verify_private_file(&path).is_err());
+        let _ = fs::remove_file(path);
     }
 }

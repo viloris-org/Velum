@@ -54,7 +54,7 @@ loads successfully.
 `velum status --format json` emits a stable, payload-free record with state,
 listener, uptime, admitted connection count, and active-flow count. Admin
 requests time out after five seconds. A custom configuration path receives an
-adjacent `admin.sock` by default, so independent local instances do not share
+adjacent private `.velum-admin/admin.sock` by default, so independent local instances do not share
 their management socket.
 
 

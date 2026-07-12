@@ -160,9 +160,6 @@ gates:
   forbidden_dependencies: 0
   unowned_modules: 0
   unowned_governed_files: 0
-  multiple_state_writers: 0
-  unversioned_breaking_changes: 0
-  expired_compatibility_shims: 0
 
 budgets:
   local_test_p95_seconds: 120

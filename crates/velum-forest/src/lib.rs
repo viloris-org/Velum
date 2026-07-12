@@ -65,7 +65,13 @@ pub struct StaticService {
 
 impl StaticService {
     fn validate(&self) -> Result<(), CoverConfigError> {
-        if self.assets.is_empty() || self.assets.keys().any(|path| !valid_path(path)) {
+        if self.assets.is_empty()
+            || self.assets.keys().any(|path| !valid_path(path))
+            || self
+                .assets
+                .values()
+                .any(|asset| !valid_content_type(&asset.content_type))
+        {
             return Err(CoverConfigError::InvalidStaticService);
         }
         Ok(())
@@ -185,6 +191,10 @@ fn request_method(head: &[u8]) -> Option<&str> {
 
 fn valid_path(path: &str) -> bool {
     path.starts_with('/') && !path.contains("..") && !path.contains('\r') && !path.contains('\n')
+}
+
+fn valid_content_type(content_type: &str) -> bool {
+    !content_type.is_empty() && !content_type.bytes().any(|byte| byte.is_ascii_control())
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -313,8 +323,9 @@ impl ForestRuntime {
         self.traffic_enabled = true;
     }
 
-    pub fn active_profile(&self) -> Option<&TrafficProfile> {
-        self.traffic_enabled.then_some(self.profiles.active())
+    pub fn active_profile(&self, now: SystemTime) -> Option<&TrafficProfile> {
+        (self.traffic_enabled && self.profiles.active().expires_at > now)
+            .then_some(self.profiles.active())
     }
 
     pub fn profiles_mut(&mut self) -> &mut ProfileStore {
@@ -413,12 +424,12 @@ mod tests {
         let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1);
         let store = ProfileStore::new(profile("bootstrap", 100), now).expect("profile");
         let mut runtime = ForestRuntime::new(store);
-        assert!(runtime.active_profile().is_some());
+        assert!(runtime.active_profile(now).is_some());
         runtime.disable_after_failure();
-        assert!(runtime.active_profile().is_none());
+        assert!(runtime.active_profile(now).is_none());
         runtime.enable();
         assert_eq!(
-            runtime.active_profile().expect("profile").identifier,
+            runtime.active_profile(now).expect("profile").identifier,
             "bootstrap"
         );
     }
@@ -472,7 +483,7 @@ mod tests {
         let profiles = ProfileStore::new(profile("bootstrap", 100), now).expect("profile");
         let mut disabled = ForestRuntime::new(profiles);
         disabled.disable_after_failure();
-        assert!(disabled.active_profile().is_none());
+        assert!(disabled.active_profile(now).is_none());
 
         let probes: [&[u8]; 5] = [
             b"GET / HTTP/1.1\r\nHost: cover.example\r\n\r\n",
@@ -547,5 +558,36 @@ mod tests {
         server.await.expect("proxy server");
         upstream.await.expect("upstream server");
         assert!(response.starts_with(b"HTTP/1.1 204 No Content\r\n"));
+    }
+
+    #[test]
+    fn expired_profiles_are_not_selected_after_reenabling_traffic() {
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1);
+        let store = ProfileStore::new(profile("bootstrap", 2), now).expect("profile");
+        let mut runtime = ForestRuntime::new(store);
+        runtime.disable_after_failure();
+        runtime.enable();
+        assert!(
+            runtime
+                .active_profile(SystemTime::UNIX_EPOCH + Duration::from_secs(2))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn static_content_type_rejects_response_splitting() {
+        let service = StaticService {
+            assets: BTreeMap::from([(
+                "/".into(),
+                StaticAsset {
+                    content_type: "text/plain\r\nX-Injected: yes".into(),
+                    body: vec![],
+                },
+            )]),
+        };
+        assert_eq!(
+            service.validate(),
+            Err(CoverConfigError::InvalidStaticService)
+        );
     }
 }

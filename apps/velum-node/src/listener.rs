@@ -55,12 +55,13 @@ pub async fn serve_quic_listener(
         }
         tokio::select! {
             control = controls.recv() => match control {
-                Some(Control::Reload) => {
+                Some(Control::Reload(completion)) => {
                     // A bad replacement must leave the admitted listener
                     // running with its last known-good certificate.
-                    if let Ok(server_config) = reload_server_config() {
+                    let result = reload_server_config().map(|server_config| {
                         endpoint.set_server_config(Some(server_config));
-                    }
+                    });
+                    let _ = completion.send(result);
                 }
                 Some(Control::Drain) => draining = true,
                 Some(Control::Shutdown) | None => break,

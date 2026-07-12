@@ -47,6 +47,13 @@ struct CompiledContract<'a> {
     module_paths: BTreeMap<&'a str, GlobSet>,
 }
 
+const SUPPORTED_GATES: &[&str] = &[
+    "dependency_cycles",
+    "forbidden_dependencies",
+    "unowned_modules",
+    "unowned_governed_files",
+];
+
 pub fn check(root: &Path) -> Result<(), String> {
     let contract_path = root.join("docs/architecture-contract.yaml");
     let source = fs::read_to_string(&contract_path)
@@ -67,18 +74,11 @@ pub fn check(root: &Path) -> Result<(), String> {
             report.active_modules.join(", ")
         );
     }
-    if !report.inactive_gates.is_empty() {
-        println!(
-            "Inactive gates awaiting owned assets: {}.",
-            report.inactive_gates.join(", ")
-        );
-    }
     Ok(())
 }
 
 struct Report {
     active_modules: Vec<String>,
-    inactive_gates: Vec<String>,
 }
 
 fn evaluate(root: &Path, contract: &Contract, metadata: &Metadata) -> Result<Report, String> {
@@ -119,7 +119,6 @@ fn evaluate(root: &Path, contract: &Contract, metadata: &Metadata) -> Result<Rep
     if errors.is_empty() {
         Ok(Report {
             active_modules: active_modules.into_iter().collect(),
-            inactive_gates: inactive_gates(contract),
         })
     } else {
         Err(format!(
@@ -196,36 +195,14 @@ fn validate_contract(contract: &Contract) -> Vec<String> {
             }
         }
     }
-    for gate in [
-        "dependency_cycles",
-        "forbidden_dependencies",
-        "unowned_modules",
-        "unowned_governed_files",
-    ] {
-        if contract
-            .gates
-            .get(gate)
-            .is_some_and(|threshold| *threshold != 0)
-        {
+    for (gate, threshold) in &contract.gates {
+        if !SUPPORTED_GATES.contains(&gate.as_str()) {
+            errors.push(format!("architecture gate {gate} is unsupported"));
+        } else if *threshold != 0 {
             errors.push(format!("structural gate {gate} must have a zero threshold"));
         }
     }
     errors
-}
-
-fn inactive_gates(contract: &Contract) -> Vec<String> {
-    const ACTIVE: &[&str] = &[
-        "dependency_cycles",
-        "forbidden_dependencies",
-        "unowned_modules",
-        "unowned_governed_files",
-    ];
-    contract
-        .gates
-        .keys()
-        .filter(|gate| !ACTIVE.contains(&gate.as_str()))
-        .cloned()
-        .collect()
 }
 
 fn matching_modules<'a>(compiled: &'a CompiledContract<'a>, path: &str) -> Vec<&'a str> {
@@ -423,6 +400,24 @@ modules:
         assert_eq!(
             validate_contract(&contract),
             vec!["module protocol allows unknown dependency missing"]
+        );
+    }
+
+    #[test]
+    fn rejects_declared_but_unsupported_gate() {
+        let source = r#"
+version: 1
+governance:
+  governed_paths: ["crates/**"]
+modules:
+  protocol: { paths: ["crates/protocol/**"], owner: protocol }
+gates:
+  future_gate: 0
+"#;
+        let contract = contract(source);
+        assert_eq!(
+            validate_contract(&contract),
+            vec!["architecture gate future_gate is unsupported"]
         );
     }
 

@@ -28,11 +28,14 @@ impl TransitionState {
         self.current
     }
 
-    pub(crate) fn advance(&mut self) -> Epoch {
+    pub(crate) fn advance(&mut self) -> Option<Epoch> {
+        if self.retiring.is_some() {
+            return None;
+        }
         let next = Epoch(self.current.0.checked_add(1).expect("epoch exhausted"));
         self.retiring = Some(self.current);
         self.current = next;
-        next
+        Some(next)
     }
 
     pub(crate) fn retire_previous(&mut self) {
@@ -62,7 +65,7 @@ mod tests {
         assert_eq!(state.validate(Epoch(4)), EpochValidity::Current);
         assert_eq!(state.validate(Epoch(3)), EpochValidity::Stale);
 
-        assert_eq!(state.advance(), Epoch(5));
+        assert_eq!(state.advance(), Some(Epoch(5)));
         assert_eq!(state.validate(Epoch(4)), EpochValidity::Retiring);
         assert_eq!(state.validate(Epoch(5)), EpochValidity::Current);
         assert_eq!(state.validate(Epoch(3)), EpochValidity::Stale);

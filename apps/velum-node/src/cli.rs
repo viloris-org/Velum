@@ -26,7 +26,7 @@ Usage:
                        [--staging] [--config PATH]
                                 Configure external Lego DNS-01 issuance
   velum acme obtain|renew [--config PATH]
-                                Issue or renew, atomically install, and reload certificates
+                                Issue or renew, install, and reload certificates
   velum status [--format text|json] [--config PATH]
   velum drain|shutdown [--config PATH]
                                 Control a running local service
@@ -43,7 +43,11 @@ pub async fn run(arguments: impl IntoIterator<Item = String>) -> Result<(), Stri
             Ok(())
         }
         [command] if command == "--version" || command == "version" => {
-            println!("velum {}", env!("CARGO_PKG_VERSION"));
+            println!(
+                "velum {} ({})",
+                env!("CARGO_PKG_VERSION"),
+                option_env!("VELUM_BUILD_REVISION").unwrap_or("dev")
+            );
             Ok(())
         }
         arguments if arguments.iter().any(|argument| argument == "--help") => {

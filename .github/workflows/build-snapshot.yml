@@ -15,8 +15,29 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  foundation:
+    name: Foundation gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Set up Node 22.22.2
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .node-version
+      - name: Install pinned Rust toolchain
+        run: |
+          rustup toolchain install 1.97.0 --profile minimal --component clippy,rustfmt
+          rustup override set 1.97.0
+      - name: Install cargo-deny 0.20.2
+        run: cargo install cargo-deny --locked --version 0.20.2
+      - name: Run Foundation gates
+        run: cargo xtask test
+
   build:
     name: ${{ matrix.platform }}
+    needs: foundation
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -36,6 +57,8 @@ jobs:
           rustup toolchain install 1.97.0 --profile minimal
           rustup override set 1.97.0
       - name: Build velum
+        env:
+          VELUM_BUILD_REVISION: ${{ github.sha }}
         run: cargo build --locked --release -p velum-node --bin velum
       - name: Package artifact
         shell: bash
@@ -74,4 +97,4 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" artifacts/*.tar.gz artifacts/SHA256SUMS --prerelease --title "Research snapshot $GITHUB_REF_NAME" --notes "Experimental research snapshot. Not a supported release and not a stable protocol commitment."
+          gh release create "$GITHUB_REF_NAME" artifacts/*.tar.gz artifacts/SHA256SUMS --prerelease --title "Research snapshot $GITHUB_REF_NAME" --notes "Experimental research snapshot from $GITHUB_SHA. Not a supported release and not a stable protocol commitment."

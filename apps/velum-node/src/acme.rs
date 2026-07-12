@@ -2,7 +2,7 @@
 //!
 //! Velum deliberately delegates ACME protocol and DNS-provider support to
 //! Lego. This module owns only non-secret policy, invoking the pinned helper,
-//! and atomically activating the resulting PEM files.
+//! and activating a validated certificate/key pair with rollback on failure.
 
 use std::{
     env, fs,
@@ -101,6 +101,9 @@ async fn run(config_path: &Path, action: &str) -> Result<(), String> {
 }
 
 async fn activate(config_path: &Path, config: &Config, acme: &AcmeConfig) -> Result<(), String> {
+    if config.listener.certificate == config.listener.private_key {
+        return Err("ACME requires distinct certificate and private-key paths".into());
+    }
     let domain = acme
         .domains
         .first()
@@ -113,8 +116,25 @@ async fn activate(config_path: &Path, config: &Config, acme: &AcmeConfig) -> Res
     let key = config::read_private_key(&private_key)?;
     quinn::ServerConfig::with_single_cert(chain, key)
         .map_err(|error| format!("Lego produced an invalid certificate or key: {error}"))?;
-    install_private_file(&certificate, &config.listener.certificate)?;
-    install_private_file(&private_key, &config.listener.private_key)?;
+    let staged_certificate = stage_private_file(&certificate, &config.listener.certificate)?;
+    let staged_private_key = match stage_private_file(&private_key, &config.listener.private_key) {
+        Ok(staged) => staged,
+        Err(error) => {
+            cleanup_path(&staged_certificate);
+            return Err(error);
+        }
+    };
+    let result = activate_pair(
+        &staged_certificate,
+        &staged_private_key,
+        &config.listener.certificate,
+        &config.listener.private_key,
+    );
+    if result.is_err() {
+        cleanup_path(&staged_certificate);
+        cleanup_path(&staged_private_key);
+    }
+    result?;
     println!("Activated ACME certificate for {domain}");
     request_reload(config_path).await
 }
@@ -122,14 +142,11 @@ async fn activate(config_path: &Path, config: &Config, acme: &AcmeConfig) -> Res
 async fn request_reload(config_path: &Path) -> Result<(), String> {
     let config = config::read(config_path)?;
     crate::admin::request(&config.admin.socket, "reload").await?;
-    println!("Reload requested from running service");
+    println!("Reload completed by running service");
     Ok(())
 }
 
-fn install_private_file(source: &Path, destination: &Path) -> Result<(), String> {
-    if source == destination {
-        return Ok(());
-    }
+fn stage_private_file(source: &Path, destination: &Path) -> Result<PathBuf, String> {
     let parent = destination
         .parent()
         .ok_or("certificate destination has no parent directory")?;
@@ -139,7 +156,13 @@ fn install_private_file(source: &Path, destination: &Path) -> Result<(), String>
             parent.display()
         )
     })?;
-    let temporary = destination.with_extension("velum-acme.tmp");
+    let temporary = temporary_path(destination, "stage");
+    if temporary.exists() {
+        return Err(format!(
+            "ACME staging file {} already exists; resolve the previous activation first",
+            temporary.display()
+        ));
+    }
     fs::copy(source, &temporary).map_err(|error| {
         format!(
             "cannot stage certificate {}: {error}",
@@ -147,12 +170,103 @@ fn install_private_file(source: &Path, destination: &Path) -> Result<(), String>
         )
     })?;
     restrict_file(&temporary)?;
-    fs::rename(&temporary, destination).map_err(|error| {
+    Ok(temporary)
+}
+
+fn activate_pair(
+    staged_certificate: &Path,
+    staged_private_key: &Path,
+    certificate: &Path,
+    private_key: &Path,
+) -> Result<(), String> {
+    let certificate_backup = backup_file(certificate)?;
+    let private_key_backup = match backup_file(private_key) {
+        Ok(backup) => backup,
+        Err(error) => {
+            cleanup(&certificate_backup);
+            return Err(error);
+        }
+    };
+
+    if let Err(error) = replace_file(staged_certificate, certificate) {
+        cleanup(&certificate_backup);
+        cleanup(&private_key_backup);
+        return Err(error);
+    }
+    if let Err(error) = replace_file(staged_private_key, private_key) {
+        let rollback = restore_file(certificate, certificate_backup.as_deref());
+        cleanup(&private_key_backup);
+        return match rollback {
+            Ok(()) => Err(error),
+            Err(rollback_error) => Err(format!(
+                "{error}; additionally failed to restore certificate {}: {rollback_error}",
+                certificate.display()
+            )),
+        };
+    }
+
+    cleanup(&certificate_backup);
+    cleanup(&private_key_backup);
+    Ok(())
+}
+
+fn backup_file(path: &Path) -> Result<Option<PathBuf>, String> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let backup = temporary_path(path, "backup");
+    if backup.exists() {
+        return Err(format!(
+            "ACME backup file {} already exists; resolve the previous activation first",
+            backup.display()
+        ));
+    }
+    fs::copy(path, &backup)
+        .map_err(|error| format!("cannot back up certificate {}: {error}", path.display()))?;
+    restrict_file(&backup)?;
+    Ok(Some(backup))
+}
+
+fn replace_file(staged: &Path, destination: &Path) -> Result<(), String> {
+    fs::rename(staged, destination).map_err(|error| {
         format!(
             "cannot activate certificate {}: {error}",
             destination.display()
         )
     })
+}
+
+fn restore_file(destination: &Path, backup: Option<&Path>) -> Result<(), String> {
+    match backup {
+        Some(backup) => fs::rename(backup, destination).map_err(|error| {
+            format!(
+                "cannot restore certificate {} from {}: {error}",
+                destination.display(),
+                backup.display()
+            )
+        }),
+        None if destination.exists() => fs::remove_file(destination).map_err(|error| {
+            format!(
+                "cannot remove certificate {}: {error}",
+                destination.display()
+            )
+        }),
+        None => Ok(()),
+    }
+}
+
+fn cleanup(path: &Option<PathBuf>) {
+    if let Some(path) = path {
+        cleanup_path(path);
+    }
+}
+
+fn cleanup_path(path: &Path) {
+    let _ = fs::remove_file(path);
+}
+
+fn temporary_path(destination: &Path, label: &str) -> PathBuf {
+    destination.with_extension(format!("velum-acme-{label}"))
 }
 
 fn lego_binary() -> Result<PathBuf, String> {
@@ -229,5 +343,72 @@ mod tests {
     fn accepts_dns_names_and_rejects_ip_addresses() {
         assert!(valid_domain("relay.example.com"));
         assert!(!valid_domain("127.0.0.1"));
+    }
+
+    #[test]
+    fn pair_activation_replaces_both_staged_files() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!("velum-acme-{unique}"));
+        fs::create_dir_all(&directory).expect("directory");
+        let certificate = directory.join("cert.pem");
+        let private_key = directory.join("key.pem");
+        let staged_certificate = temporary_path(&certificate, "stage");
+        let staged_private_key = temporary_path(&private_key, "stage");
+        fs::write(&certificate, b"old certificate").expect("certificate");
+        fs::write(&private_key, b"old key").expect("key");
+        fs::write(&staged_certificate, b"new certificate").expect("staged certificate");
+        fs::write(&staged_private_key, b"new key").expect("staged key");
+
+        activate_pair(
+            &staged_certificate,
+            &staged_private_key,
+            &certificate,
+            &private_key,
+        )
+        .expect("activate pair");
+
+        assert_eq!(
+            fs::read(&certificate).expect("certificate"),
+            b"new certificate"
+        );
+        assert_eq!(fs::read(&private_key).expect("key"), b"new key");
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn pair_activation_restores_the_certificate_when_key_replacement_fails() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!("velum-acme-{unique}"));
+        fs::create_dir_all(&directory).expect("directory");
+        let certificate = directory.join("cert.pem");
+        let private_key = directory.join("key.pem");
+        let staged_certificate = temporary_path(&certificate, "stage");
+        let missing_staged_key = temporary_path(&private_key, "stage");
+        fs::write(&certificate, b"old certificate").expect("certificate");
+        fs::write(&private_key, b"old key").expect("key");
+        fs::write(&staged_certificate, b"new certificate").expect("staged certificate");
+
+        assert!(
+            activate_pair(
+                &staged_certificate,
+                &missing_staged_key,
+                &certificate,
+                &private_key,
+            )
+            .is_err()
+        );
+
+        assert_eq!(
+            fs::read(&certificate).expect("certificate"),
+            b"old certificate"
+        );
+        assert_eq!(fs::read(&private_key).expect("key"), b"old key");
+        let _ = fs::remove_dir_all(directory);
     }
 }

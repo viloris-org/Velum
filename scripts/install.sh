@@ -42,7 +42,12 @@ if [ -z "$version" ]; then
 fi
 
 case "$(uname -s)" in
-    Linux) platform='linux-x86_64' ;;
+    Linux)
+        case "$(uname -m)" in
+            x86_64) platform='linux-x86_64' ;;
+            *) echo "error: no Linux snapshot is published for $(uname -m)" >&2; exit 1 ;;
+        esac
+        ;;
     Darwin)
         case "$(uname -m)" in
             arm64) platform='darwin-aarch64' ;;

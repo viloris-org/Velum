@@ -3,7 +3,10 @@
 //! One authenticated TLS connection maps to one reliable byte stream. TLS has
 //! no datagram semantics, session authentication, or session delivery state.
 
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
+};
 
 use rustls::{ClientConfig, ProtocolVersion, ServerConfig, pki_types::ServerName};
 use tokio::{
@@ -19,10 +22,14 @@ use velum_carrier_api::{
 /// A reliable byte stream carried by one TLS 1.3 over TCP connection.
 pub struct TlsStream {
     stream: RustlsStream<TcpStream>,
+    closed: Arc<AtomicBool>,
 }
 
 impl TlsStream {
     pub async fn write_all(&mut self, bytes: &[u8]) -> Result<(), CarrierError> {
+        if self.closed.load(Ordering::Acquire) {
+            return Err(CarrierError::Closed);
+        }
         self.stream
             .write_all(bytes)
             .await
@@ -30,6 +37,9 @@ impl TlsStream {
     }
 
     pub async fn read_chunk(&mut self, maximum: usize) -> Result<Option<Vec<u8>>, CarrierError> {
+        if self.closed.load(Ordering::Acquire) {
+            return Err(CarrierError::Closed);
+        }
         if maximum == 0 {
             return Ok(Some(Vec::new()));
         }
@@ -47,6 +57,9 @@ impl TlsStream {
     }
 
     pub async fn finish(&mut self) -> Result<(), CarrierError> {
+        if self.closed.load(Ordering::Acquire) {
+            return Err(CarrierError::Closed);
+        }
         self.stream
             .shutdown()
             .await
@@ -61,6 +74,7 @@ pub struct TlsCarrier {
     id: CarrierId,
     stream: Arc<Mutex<Option<TlsStream>>>,
     healthy: Arc<Mutex<bool>>,
+    closed: Arc<AtomicBool>,
 }
 
 impl TlsCarrier {
@@ -96,17 +110,21 @@ impl TlsCarrier {
     }
 
     fn new(id: CarrierId, stream: RustlsStream<TcpStream>) -> Self {
+        let closed = Arc::new(AtomicBool::new(false));
         Self {
             id,
-            stream: Arc::new(Mutex::new(Some(TlsStream { stream }))),
+            stream: Arc::new(Mutex::new(Some(TlsStream {
+                stream,
+                closed: Arc::clone(&closed),
+            }))),
             healthy: Arc::new(Mutex::new(true)),
+            closed,
         }
     }
 
     fn take_stream(&self) -> Result<TlsStream, CarrierError> {
         let mut stream = self.stream.lock().map_err(|_| CarrierError::Transport)?;
         let taken = stream.take().ok_or(CarrierError::Closed)?;
-        *self.healthy.lock().map_err(|_| CarrierError::Transport)? = false;
         Ok(taken)
     }
 }
@@ -156,6 +174,7 @@ impl Carrier for TlsCarrier {
     }
 
     fn close(&self) {
+        self.closed.store(true, Ordering::Release);
         if let Ok(mut stream) = self.stream.lock() {
             stream.take();
         }
@@ -257,6 +276,11 @@ mod tests {
                 .await,
             Err(CarrierError::Closed)
         ));
+        carrier.close();
+        assert_eq!(
+            stream.write_all(b"after close").await,
+            Err(CarrierError::Closed)
+        );
         server_task.await.expect("server task");
     }
 
