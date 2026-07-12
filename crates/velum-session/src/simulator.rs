@@ -108,6 +108,8 @@ mod tests {
                 max_flows: 1,
                 max_pending_segments: 8,
                 max_pending_bytes: 8,
+                max_session_pending_segments: 8,
+                max_session_pending_bytes: 8,
                 max_pending_age: 10,
                 max_events: 16,
             },

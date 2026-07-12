@@ -1,6 +1,7 @@
 //! Experimental application-owned control record for the QUIC slice.
 //!
-//! This record is not a Velum wire protocol and must be replaced before Stage 5.
+//! This record is not the Velum v0 wire protocol and must be replaced before
+//! this listener claims v0 interoperability.
 
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 

@@ -1,78 +1,64 @@
-//! Protocol-level identifiers and state-machine types.
-//!
-//! Frame encoding is deliberately deferred until the session tracer has
-//! established the required state transitions.
+//! Carrier-independent v0 protocol types and bounded frame codec.
 
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct FlowId(pub u64);
+mod frame;
+mod types;
 
-/// Opaque identifier for one logical session.
-///
-/// Its byte representation is intentionally not a wire-format commitment.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct SessionId(pub [u8; 16]);
+pub use frame::{
+    FRAME_HEADER_BYTES, Frame, FrameDecodeError, FrameDecoder, FrameEncodeError, MAX_FRAME_PAYLOAD,
+};
+pub use types::{
+    AttachmentId, AttachmentIdError, Capabilities, CapabilityAdvertisement,
+    CapabilityAdvertisementError, Epoch, FlowId, HandshakeNonce, HandshakeNonceError,
+    NEGOTIATED_PARAMETERS_BYTES, NegotiatedParameters, NegotiationError, NegotiationOffer,
+    Sequence, SessionId, VersionRange, VersionRangeError,
+};
 
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub struct Epoch(pub u64);
-
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub struct Sequence(pub u64);
-
-/// Version range advertised before a logical-session attachment is accepted.
-/// This is typed negotiation state, not a Stage 5 wire encoding commitment.
+/// Stable, payload-free error codes emitted by v0 control frames.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct VersionRange {
-    pub minimum: u16,
-    pub maximum: u16,
+pub enum ProtocolErrorCode {
+    NoSharedVersion,
+    IncompatibleCapabilities,
+    AuthenticationFailed,
+    ReplayDetected,
+    ProtocolViolation,
+    ResourceLimit,
+    FlowNotFound,
+    FlowState,
+    ResumeUnsupported,
+    Internal,
+    Unknown(u16),
 }
 
-impl VersionRange {
-    pub const fn negotiate(self, peer: Self) -> Option<u16> {
-        let minimum = if self.minimum > peer.minimum {
-            self.minimum
-        } else {
-            peer.minimum
-        };
-        let maximum = if self.maximum < peer.maximum {
-            self.maximum
-        } else {
-            peer.maximum
-        };
-        if minimum <= maximum {
-            Some(maximum)
-        } else {
-            None
+impl ProtocolErrorCode {
+    pub const fn as_u16(self) -> u16 {
+        match self {
+            Self::NoSharedVersion => 0x0001,
+            Self::IncompatibleCapabilities => 0x0002,
+            Self::AuthenticationFailed => 0x0003,
+            Self::ReplayDetected => 0x0004,
+            Self::ProtocolViolation => 0x0005,
+            Self::ResourceLimit => 0x0006,
+            Self::FlowNotFound => 0x0007,
+            Self::FlowState => 0x0008,
+            Self::ResumeUnsupported => 0x0009,
+            Self::Internal => 0x00ff,
+            Self::Unknown(value) => value,
         }
     }
-}
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn version_negotiation_selects_the_newest_shared_version() {
-        assert_eq!(
-            VersionRange {
-                minimum: 0,
-                maximum: 2
-            }
-            .negotiate(VersionRange {
-                minimum: 1,
-                maximum: 3
-            }),
-            Some(2)
-        );
-        assert_eq!(
-            VersionRange {
-                minimum: 0,
-                maximum: 0
-            }
-            .negotiate(VersionRange {
-                minimum: 1,
-                maximum: 2
-            }),
-            None
-        );
+    pub const fn from_u16(value: u16) -> Self {
+        match value {
+            0x0001 => Self::NoSharedVersion,
+            0x0002 => Self::IncompatibleCapabilities,
+            0x0003 => Self::AuthenticationFailed,
+            0x0004 => Self::ReplayDetected,
+            0x0005 => Self::ProtocolViolation,
+            0x0006 => Self::ResourceLimit,
+            0x0007 => Self::FlowNotFound,
+            0x0008 => Self::FlowState,
+            0x0009 => Self::ResumeUnsupported,
+            0x00ff => Self::Internal,
+            unknown => Self::Unknown(unknown),
+        }
     }
 }

@@ -3,6 +3,7 @@
 //! This model has no networking or frame bytes. It establishes ownership of
 //! sequence allocation, cumulative acknowledgement, and receive delivery.
 
+mod dispatcher;
 mod simulator;
 mod transition;
 
@@ -16,9 +17,12 @@ use velum_carrier_api::{CarrierId, CarrierKind};
 use velum_crypto::{
     AttachmentAuthenticationError, AttachmentAuthenticator, AttachmentProof, ReplayWindow,
 };
-use velum_protocol::{Epoch, FlowId, Sequence, SessionId, VersionRange};
+use velum_protocol::{
+    AttachmentId, Epoch, FlowId, NegotiatedParameters, Sequence, SessionId, VersionRange,
+};
 use velum_telemetry::{CarrierClass, SessionEvent, TransitionReason, TransitionRejection};
 
+pub use dispatcher::{DispatchError, DispatchOutcome, SessionFrameDispatcher};
 pub use simulator::{CarrierDisposition, InMemoryCarrier};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -41,6 +45,8 @@ pub struct FlowLimits {
     pub max_flows: usize,
     pub max_pending_segments: usize,
     pub max_pending_bytes: usize,
+    pub max_session_pending_segments: usize,
+    pub max_session_pending_bytes: usize,
     pub max_pending_age: u64,
     pub max_events: usize,
 }
@@ -51,7 +57,10 @@ pub enum TraceError {
     FlowLimit,
     PendingSegmentLimit,
     PendingByteLimit,
+    SessionPendingSegmentLimit,
+    SessionPendingByteLimit,
     FlowHasPendingSegments,
+    FlowFinished,
     InvalidAcknowledgement,
     TransitionInProgress,
     StaleEpoch,
@@ -60,17 +69,35 @@ pub enum TraceError {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CarrierAttachment {
+    /// Process-local carrier ownership; never serialized or authenticated as
+    /// peer-visible protocol data.
     pub carrier: CarrierId,
     pub epoch: Epoch,
+    pub attachment_id: AttachmentId,
+    pub parameters: NegotiatedParameters,
     pub proof: AttachmentProof,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AttachmentError {
+    MissingNegotiation,
+    NegotiationMismatch,
     Authentication(AttachmentAuthenticationError),
     StaleEpoch,
     FutureEpoch,
     Replay,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AttachmentAcceptance {
+    Accepted,
+    AlreadyAccepted,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NegotiationBindingError {
+    AlreadyBound,
+    AttachmentAlreadyAccepted,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -89,6 +116,7 @@ pub enum ReceiveResult {
 struct ReliableFlow {
     next_send: Sequence,
     next_receive: Sequence,
+    receive_final_next: Option<Sequence>,
     pending: VecDeque<PendingSegment>,
     pending_bytes: usize,
 }
@@ -99,13 +127,25 @@ struct PendingSegment {
     expires_at: u64,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AcceptedCarrierAttachment {
+    pub carrier: CarrierId,
+    pub epoch: Epoch,
+    pub attachment_id: AttachmentId,
+}
+
 /// Owns all flow delivery cursors for one logical session.
 #[derive(Debug)]
 pub struct SessionTracer {
     transition: TransitionState,
     attachment_replay: ReplayWindow,
+    negotiated: Option<NegotiatedParameters>,
+    accepted_attachment: Option<AcceptedCarrierAttachment>,
+    retiring_attachment: Option<AcceptedCarrierAttachment>,
     tick: u64,
     next_flow: u64,
+    pending_segments: usize,
+    pending_bytes: usize,
     limits: FlowLimits,
     flows: BTreeMap<FlowId, ReliableFlow>,
     events: Vec<SessionEvent>,
@@ -115,14 +155,21 @@ impl SessionTracer {
     pub fn new(epoch: Epoch, limits: FlowLimits) -> Self {
         assert!(limits.max_pending_segments > 0);
         assert!(limits.max_pending_bytes > 0);
+        assert!(limits.max_session_pending_segments > 0);
+        assert!(limits.max_session_pending_bytes > 0);
         assert!(limits.max_pending_age > 0);
         assert!(limits.max_flows > 0);
         assert!(limits.max_events > 0);
         Self {
             transition: TransitionState::new(epoch),
             attachment_replay: ReplayWindow::default(),
+            negotiated: None,
+            accepted_attachment: None,
+            retiring_attachment: None,
             tick: 0,
             next_flow: 0,
+            pending_segments: 0,
+            pending_bytes: 0,
             limits,
             flows: BTreeMap::new(),
             events: Vec::new(),
@@ -133,26 +180,71 @@ impl SessionTracer {
         self.transition.current()
     }
 
+    /// Returns the process-local carrier that may dispatch current-epoch v0
+    /// frames after its attachment has been authenticated.
+    pub fn accepted_carrier_attachment(&self) -> Option<AcceptedCarrierAttachment> {
+        self.accepted_attachment
+    }
+
+    /// Returns whether a carrier may carry current frames, or only in-flight
+    /// frames from the single retiring epoch during an active transition.
+    pub fn carrier_attachment_is_active(&self, carrier: CarrierId) -> bool {
+        self.accepted_attachment.is_some_and(|attachment| {
+            attachment.carrier == carrier && attachment.epoch == self.epoch()
+        })
+    }
+
+    pub fn carrier_attachment_is_dispatchable(&self, carrier: CarrierId) -> bool {
+        self.carrier_attachment_is_active(carrier)
+            || self
+                .retiring_attachment
+                .is_some_and(|attachment| attachment.carrier == carrier)
+    }
+
+    /// Fixes the result of authenticated version and capability negotiation
+    /// before the first carrier attachment. It cannot change for a session.
+    pub fn bind_negotiated_parameters(
+        &mut self,
+        parameters: NegotiatedParameters,
+    ) -> Result<(), NegotiationBindingError> {
+        if self.accepted_attachment.is_some() || !self.attachment_replay.is_empty() {
+            return Err(NegotiationBindingError::AttachmentAlreadyAccepted);
+        }
+        if self.negotiated.is_some() {
+            return Err(NegotiationBindingError::AlreadyBound);
+        }
+        self.negotiated = Some(parameters);
+        Ok(())
+    }
+
     pub fn open_reliable_flow(&mut self) -> Result<FlowId, TraceError> {
+        let flow_id = FlowId(self.next_flow);
+        self.open_reliable_flow_with_id(flow_id)?;
+        Ok(flow_id)
+    }
+
+    /// Registers a peer-selected flow identifier. A flow ID is never reused
+    /// within the lifetime of this in-memory session.
+    pub fn open_reliable_flow_with_id(&mut self, flow_id: FlowId) -> Result<(), TraceError> {
         if self.flows.len() >= self.limits.max_flows {
             return Err(TraceError::FlowLimit);
         }
-        let flow_id = FlowId(self.next_flow);
-        self.next_flow = self
-            .next_flow
-            .checked_add(1)
-            .expect("flow identifier exhausted");
+        if flow_id.0 < self.next_flow || flow_id.0 == u64::MAX {
+            return Err(TraceError::FlowFinished);
+        }
+        self.next_flow = flow_id.0 + 1;
         self.flows.insert(
             flow_id,
             ReliableFlow {
                 next_send: Sequence(0),
                 next_receive: Sequence(0),
+                receive_final_next: None,
                 pending: VecDeque::new(),
                 pending_bytes: 0,
             },
         );
         self.record_event(SessionEvent::FlowOpened);
-        Ok(flow_id)
+        Ok(())
     }
 
     /// Releases a completed or timed-out flow slot. Callers must retain any
@@ -168,6 +260,22 @@ impl SessionTracer {
 
     pub fn send(&mut self, flow_id: FlowId, bytes: Vec<u8>) -> Result<Segment, TraceError> {
         let epoch = self.epoch();
+        if !self.flows.contains_key(&flow_id) {
+            return Err(TraceError::UnknownFlow);
+        }
+        if self.pending_segments >= self.limits.max_session_pending_segments {
+            self.record_event(SessionEvent::PendingLimitReached);
+            return Err(TraceError::SessionPendingSegmentLimit);
+        }
+        if bytes.len()
+            > self
+                .limits
+                .max_session_pending_bytes
+                .saturating_sub(self.pending_bytes)
+        {
+            self.record_event(SessionEvent::PendingLimitReached);
+            return Err(TraceError::SessionPendingByteLimit);
+        }
         let flow = self
             .flows
             .get_mut(&flow_id)
@@ -200,33 +308,50 @@ impl SessionTracer {
                 .checked_add(self.limits.max_pending_age)
                 .expect("pending timeout exhausted"),
         });
+        self.pending_segments += 1;
+        self.pending_bytes += segment.bytes.len();
         Ok(segment)
     }
 
     /// Applies a cumulative acknowledgement for every sequence up to `through`.
     pub fn acknowledge(&mut self, acknowledgement: Acknowledgement) -> Result<(), TraceError> {
         self.require_valid_epoch(acknowledgement.epoch)?;
-        let flow = self
-            .flows
-            .get_mut(&acknowledgement.flow_id)
-            .ok_or(TraceError::UnknownFlow)?;
-        if acknowledgement.through.0 >= flow.next_send.0 {
-            return Err(TraceError::InvalidAcknowledgement);
-        }
-        if flow.pending.iter().any(|pending| {
-            pending.segment.sequence <= acknowledgement.through
-                && pending.segment.epoch > acknowledgement.epoch
-        }) {
-            return Err(TraceError::InvalidAcknowledgement);
-        }
-        while flow
-            .pending
-            .front()
-            .is_some_and(|pending| pending.segment.sequence <= acknowledgement.through)
-        {
-            let pending = flow.pending.pop_front().expect("front was present");
-            flow.pending_bytes -= pending.segment.bytes.len();
-        }
+        let (released_segments, released_bytes) = {
+            let flow = self
+                .flows
+                .get_mut(&acknowledgement.flow_id)
+                .ok_or(TraceError::UnknownFlow)?;
+            if acknowledgement.through.0 >= flow.next_send.0 {
+                return Err(TraceError::InvalidAcknowledgement);
+            }
+            if flow.pending.iter().any(|pending| {
+                pending.segment.sequence <= acknowledgement.through
+                    && pending.segment.epoch > acknowledgement.epoch
+            }) {
+                return Err(TraceError::InvalidAcknowledgement);
+            }
+            let mut released_segments = 0;
+            let mut released_bytes = 0;
+            while flow
+                .pending
+                .front()
+                .is_some_and(|pending| pending.segment.sequence <= acknowledgement.through)
+            {
+                let pending = flow.pending.pop_front().expect("front was present");
+                flow.pending_bytes -= pending.segment.bytes.len();
+                released_segments += 1;
+                released_bytes += pending.segment.bytes.len();
+            }
+            (released_segments, released_bytes)
+        };
+        self.pending_segments = self
+            .pending_segments
+            .checked_sub(released_segments)
+            .expect("session pending segment accounting");
+        self.pending_bytes = self
+            .pending_bytes
+            .checked_sub(released_bytes)
+            .expect("session pending byte accounting");
         Ok(())
     }
 
@@ -236,6 +361,12 @@ impl SessionTracer {
             .flows
             .get_mut(&segment.flow_id)
             .ok_or(TraceError::UnknownFlow)?;
+        if flow
+            .receive_final_next
+            .is_some_and(|final_next| segment.sequence >= final_next)
+        {
+            return Err(TraceError::FlowFinished);
+        }
         if segment.sequence < flow.next_receive {
             self.record_event(SessionEvent::DuplicateIgnored);
             return Ok(ReceiveResult::Duplicate);
@@ -251,6 +382,47 @@ impl SessionTracer {
                 .expect("sequence exhausted"),
         );
         Ok(ReceiveResult::Delivered(segment.bytes))
+    }
+
+    /// Records a peer's exclusive final receive cursor. Data below the cursor
+    /// may still arrive in order; data at or above it is a flow-state error.
+    pub fn finish_receiving(
+        &mut self,
+        flow_id: FlowId,
+        epoch: Epoch,
+        final_next_sequence: Sequence,
+    ) -> Result<(), TraceError> {
+        self.require_valid_epoch(epoch)?;
+        let flow = self
+            .flows
+            .get_mut(&flow_id)
+            .ok_or(TraceError::UnknownFlow)?;
+        if final_next_sequence < flow.next_receive {
+            return Err(TraceError::FlowFinished);
+        }
+        match flow.receive_final_next {
+            Some(existing) if existing == final_next_sequence => Ok(()),
+            Some(_) => Err(TraceError::FlowFinished),
+            None => {
+                flow.receive_final_next = Some(final_next_sequence);
+                Ok(())
+            }
+        }
+    }
+
+    /// Terminates a flow and releases any locally retained retransmission
+    /// state. This is used for a peer reset or a session-level close.
+    pub fn reset_reliable_flow(&mut self, flow_id: FlowId) -> Result<(), TraceError> {
+        let flow = self.flows.remove(&flow_id).ok_or(TraceError::UnknownFlow)?;
+        self.pending_segments = self
+            .pending_segments
+            .checked_sub(flow.pending.len())
+            .expect("session pending segment accounting");
+        self.pending_bytes = self
+            .pending_bytes
+            .checked_sub(flow.pending_bytes)
+            .expect("session pending byte accounting");
+        Ok(())
     }
 
     pub fn pending(&self, flow_id: FlowId) -> Result<Vec<Segment>, TraceError> {
@@ -301,7 +473,15 @@ impl SessionTracer {
             }
         }
         for flow_id in &timed_out {
-            self.flows.remove(flow_id);
+            let flow = self.flows.remove(flow_id).expect("timed-out flow exists");
+            self.pending_segments = self
+                .pending_segments
+                .checked_sub(flow.pending.len())
+                .expect("session pending segment accounting");
+            self.pending_bytes = self
+                .pending_bytes
+                .checked_sub(flow.pending_bytes)
+                .expect("session pending byte accounting");
         }
         for _ in &timed_out {
             self.record_event(SessionEvent::FlowTimedOut);
@@ -316,9 +496,12 @@ impl SessionTracer {
     /// Opens a one-epoch receive window for segments and acknowledgements
     /// still in flight on the retiring carrier.
     pub fn begin_transition(&mut self) -> Result<Epoch, TraceError> {
-        self.transition
+        let next = self
+            .transition
             .advance()
-            .ok_or(TraceError::TransitionInProgress)
+            .ok_or(TraceError::TransitionInProgress)?;
+        self.retiring_attachment = self.accepted_attachment.take();
+        Ok(next)
     }
 
     /// Records an explainable carrier change without exporting transport
@@ -352,13 +535,19 @@ impl SessionTracer {
     }
 
     /// Accepts a new carrier only when its proof binds it to this session's
-    /// current epoch and that epoch has not already been attached.
+    /// current epoch, the negotiated transcript, and a fresh attachment ID.
+    /// Retransmitting the same accepted attachment is idempotent so a lost
+    /// `AttachAccepted` response does not force a new epoch.
     pub fn authenticate_carrier_attachment(
         &mut self,
         authenticator: &AttachmentAuthenticator,
         session: SessionId,
         attachment: CarrierAttachment,
-    ) -> Result<(), AttachmentError> {
+    ) -> Result<AttachmentAcceptance, AttachmentError> {
+        let negotiated = self.negotiated.ok_or(AttachmentError::MissingNegotiation)?;
+        if attachment.parameters != negotiated {
+            return self.reject_attachment(AttachmentError::NegotiationMismatch);
+        }
         match self.transition.validate(attachment.epoch) {
             EpochValidity::Current => {}
             EpochValidity::Retiring | EpochValidity::Stale => {
@@ -369,21 +558,37 @@ impl SessionTracer {
         authenticator
             .verify(
                 session,
-                attachment.carrier.0,
                 attachment.epoch,
+                attachment.attachment_id,
+                negotiated,
                 attachment.proof,
             )
             .map_err(AttachmentError::Authentication)
             .or_else(|error| self.reject_attachment(error))?;
+        if self.accepted_attachment
+            == Some(AcceptedCarrierAttachment {
+                carrier: attachment.carrier,
+                epoch: attachment.epoch,
+                attachment_id: attachment.attachment_id,
+            })
+        {
+            return Ok(AttachmentAcceptance::AlreadyAccepted);
+        }
         if !self.attachment_replay.accept(attachment.epoch) {
             return self.reject_attachment(AttachmentError::Replay);
         }
-        Ok(())
+        self.accepted_attachment = Some(AcceptedCarrierAttachment {
+            carrier: attachment.carrier,
+            epoch: attachment.epoch,
+            attachment_id: attachment.attachment_id,
+        });
+        Ok(AttachmentAcceptance::Accepted)
     }
 
     /// Closes the retiring epoch's replay window after its carrier detaches.
     pub fn complete_transition(&mut self) {
         self.transition.retire_previous();
+        self.retiring_attachment = None;
         self.record_event(SessionEvent::TransitionCompleted);
     }
 
@@ -420,6 +625,7 @@ fn carrier_class(kind: CarrierKind) -> CarrierClass {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use velum_protocol::{Capabilities, CapabilityAdvertisement, HandshakeNonce, NegotiationOffer};
 
     fn tracer() -> SessionTracer {
         SessionTracer::new(
@@ -428,59 +634,110 @@ mod tests {
                 max_flows: 2,
                 max_pending_segments: 2,
                 max_pending_bytes: 3,
+                max_session_pending_segments: 3,
+                max_session_pending_bytes: 4,
                 max_pending_age: 2,
                 max_events: 2,
             },
         )
     }
 
+    fn nonce(byte: u8) -> HandshakeNonce {
+        HandshakeNonce::new([byte; 16]).expect("non-zero nonce")
+    }
+
+    fn parameters() -> NegotiatedParameters {
+        NegotiationOffer::new(
+            VersionRange::new(0, 0).expect("range"),
+            CapabilityAdvertisement::new(Capabilities::RELIABLE_STREAM, Capabilities(0))
+                .expect("capabilities"),
+            nonce(1),
+        )
+        .expect("offer")
+        .negotiate(
+            VersionRange::new(0, 0).expect("range"),
+            Capabilities::RELIABLE_STREAM,
+            nonce(2),
+        )
+        .expect("parameters")
+    }
+
     fn attachment(
         epoch: Epoch,
         carrier: CarrierId,
-    ) -> (AttachmentAuthenticator, SessionId, CarrierAttachment) {
+        attachment_byte: u8,
+    ) -> (
+        AttachmentAuthenticator,
+        SessionId,
+        NegotiatedParameters,
+        CarrierAttachment,
+    ) {
         let authenticator = AttachmentAuthenticator::new(b"attachment secret").expect("secret");
         let session = SessionId([5; 16]);
+        let parameters = parameters();
+        let attachment_id = AttachmentId::new([attachment_byte; 16]).expect("attachment id");
         let attachment = CarrierAttachment {
             carrier,
             epoch,
-            proof: authenticator.prove(session, carrier.0, epoch),
+            attachment_id,
+            parameters,
+            proof: authenticator.prove(session, epoch, attachment_id, parameters),
         };
-        (authenticator, session, attachment)
+        (authenticator, session, parameters, attachment)
     }
 
     #[test]
     fn carrier_attachments_require_a_fresh_authenticated_current_epoch() {
         let mut session = tracer();
-        let (authenticator, session_id, first) = attachment(Epoch(0), CarrierId(1));
+        let (authenticator, session_id, parameters, first) = attachment(Epoch(0), CarrierId(1), 1);
+        session
+            .bind_negotiated_parameters(parameters)
+            .expect("bind negotiation");
         assert_eq!(
             session.authenticate_carrier_attachment(&authenticator, session_id, first),
-            Ok(())
+            Ok(AttachmentAcceptance::Accepted)
+        );
+        assert_eq!(
+            session.accepted_carrier_attachment(),
+            Some(AcceptedCarrierAttachment {
+                carrier: CarrierId(1),
+                epoch: Epoch(0),
+                attachment_id: first.attachment_id,
+            })
         );
         assert_eq!(
             session.authenticate_carrier_attachment(&authenticator, session_id, first),
+            Ok(AttachmentAcceptance::AlreadyAccepted)
+        );
+        assert_eq!(
+            session.authenticate_carrier_attachment(
+                &authenticator,
+                session_id,
+                CarrierAttachment {
+                    carrier: CarrierId(9),
+                    ..first
+                },
+            ),
             Err(AttachmentError::Replay)
-        );
-        assert_eq!(
-            session.events(),
-            &[SessionEvent::TransitionRejected {
-                reason: TransitionRejection::AttachmentRejected,
-            }]
         );
 
         assert_eq!(session.begin_transition(), Ok(Epoch(1)));
-        let (_, _, second) = attachment(Epoch(1), CarrierId(2));
+        let (_, _, _, second) = attachment(Epoch(1), CarrierId(2), 2);
         assert_eq!(
             session.authenticate_carrier_attachment(&authenticator, session_id, second),
-            Ok(())
+            Ok(AttachmentAcceptance::Accepted)
         );
     }
 
     #[test]
     fn carrier_attachments_reject_stale_future_and_forged_proofs() {
         let mut session = tracer();
-        let (authenticator, session_id, first) = attachment(Epoch(0), CarrierId(1));
+        let (authenticator, session_id, parameters, first) = attachment(Epoch(0), CarrierId(1), 1);
+        session
+            .bind_negotiated_parameters(parameters)
+            .expect("bind negotiation");
         let forged = CarrierAttachment {
-            carrier: CarrierId(2),
+            attachment_id: AttachmentId::new([2; 16]).expect("attachment id"),
             ..first
         };
         assert!(matches!(
@@ -494,10 +751,41 @@ mod tests {
             session.authenticate_carrier_attachment(&authenticator, session_id, first),
             Err(AttachmentError::StaleEpoch)
         );
-        let (_, _, future) = attachment(Epoch(2), CarrierId(3));
+        let (_, _, _, future) = attachment(Epoch(2), CarrierId(3), 3);
         assert_eq!(
             session.authenticate_carrier_attachment(&authenticator, session_id, future),
             Err(AttachmentError::FutureEpoch)
+        );
+    }
+
+    #[test]
+    fn carrier_attachments_require_a_bound_matching_negotiation() {
+        let mut session = tracer();
+        let (authenticator, session_id, parameters, attachment) =
+            attachment(Epoch(0), CarrierId(1), 1);
+        assert_eq!(
+            session.authenticate_carrier_attachment(&authenticator, session_id, attachment),
+            Err(AttachmentError::MissingNegotiation)
+        );
+        session
+            .bind_negotiated_parameters(parameters)
+            .expect("bind negotiation");
+        assert_eq!(
+            session.bind_negotiated_parameters(parameters),
+            Err(NegotiationBindingError::AlreadyBound)
+        );
+        let mismatched = CarrierAttachment {
+            parameters: NegotiatedParameters {
+                capabilities: Capabilities(
+                    Capabilities::RELIABLE_STREAM.0 | Capabilities::UNRELIABLE_DATAGRAM.0,
+                ),
+                ..attachment.parameters
+            },
+            ..attachment
+        };
+        assert_eq!(
+            session.authenticate_carrier_attachment(&authenticator, session_id, mismatched),
+            Err(AttachmentError::NegotiationMismatch)
         );
     }
 
@@ -576,6 +864,51 @@ mod tests {
     }
 
     #[test]
+    fn session_pending_limits_bound_multiple_flows() {
+        let limits = FlowLimits {
+            max_flows: 2,
+            max_pending_segments: 2,
+            max_pending_bytes: 4,
+            max_session_pending_segments: 2,
+            max_session_pending_bytes: 8,
+            max_pending_age: 2,
+            max_events: 4,
+        };
+        let mut session = SessionTracer::new(Epoch(0), limits);
+        let first = session.open_reliable_flow().expect("first flow");
+        let second = session.open_reliable_flow().expect("second flow");
+        session.send(first, vec![1]).expect("first segment");
+        session.send(second, vec![2]).expect("second segment");
+        assert_eq!(
+            session.send(first, vec![3]),
+            Err(TraceError::SessionPendingSegmentLimit)
+        );
+        session
+            .acknowledge(Acknowledgement {
+                flow_id: first,
+                epoch: Epoch(0),
+                through: Sequence(0),
+            })
+            .expect("acknowledge first");
+        session.send(first, vec![3]).expect("released session slot");
+
+        let mut bytes_limited = SessionTracer::new(
+            Epoch(0),
+            FlowLimits {
+                max_session_pending_bytes: 3,
+                ..limits
+            },
+        );
+        let first = bytes_limited.open_reliable_flow().expect("first flow");
+        let second = bytes_limited.open_reliable_flow().expect("second flow");
+        bytes_limited.send(first, vec![1, 2]).expect("first bytes");
+        assert_eq!(
+            bytes_limited.send(second, vec![3, 4]),
+            Err(TraceError::SessionPendingByteLimit)
+        );
+    }
+
+    #[test]
     fn pending_timeout_removes_the_flow_and_releases_its_session_slot() {
         let mut session = SessionTracer::new(
             Epoch(0),
@@ -583,6 +916,8 @@ mod tests {
                 max_flows: 1,
                 max_pending_segments: 2,
                 max_pending_bytes: 3,
+                max_session_pending_segments: 2,
+                max_session_pending_bytes: 3,
                 max_pending_age: 2,
                 max_events: 3,
             },
@@ -611,6 +946,8 @@ mod tests {
                 max_flows: 1,
                 max_pending_segments: 1,
                 max_pending_bytes: 1,
+                max_session_pending_segments: 1,
+                max_session_pending_bytes: 1,
                 max_pending_age: 1,
                 max_events: 1,
             },
@@ -799,6 +1136,8 @@ mod tests {
                 max_flows: 1,
                 max_pending_segments: 2,
                 max_pending_bytes: 2,
+                max_session_pending_segments: 2,
+                max_session_pending_bytes: 2,
                 max_pending_age: 2,
                 max_events: 2,
             },

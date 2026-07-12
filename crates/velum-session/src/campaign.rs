@@ -33,6 +33,8 @@ fn session() -> SessionTracer {
             max_flows: 1,
             max_pending_segments: 8,
             max_pending_bytes: 128,
+            max_session_pending_segments: 8,
+            max_session_pending_bytes: 128,
             max_pending_age: 16,
             max_events: 16,
         },

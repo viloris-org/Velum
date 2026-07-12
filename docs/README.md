@@ -27,6 +27,8 @@ questions. Proposed ADRs are not final protocol commitments.
   deployment requirements.
 - [Protocol requirements](protocol-requirements.md): delivery semantics,
   invariants, quality scenarios, and fitness functions.
+- [Protocol v0 draft](protocol-v0.md): bounded frame grammar, negotiation,
+  carrier attachment, reliable-stream frames, and explicit recovery limits.
 - [Stage 1 session tracer](session-tracer.md): deterministic reliable-flow
   state model and transition table.
 - [Architecture contract](architecture-contract.yaml): initial machine-readable
@@ -51,7 +53,7 @@ questions. Proposed ADRs are not final protocol commitments.
 |---|---|---|
 | Vision | Working baseline | Target-user interviews validate the problem |
 | Architecture | Proposed | Tracer prototype validates session migration |
-| Wire protocol | Not defined | State machine and carrier experiments converge |
+| Wire protocol | v0 draft | Vectors, a second consumer, fuzzing, and security review converge |
 | Security model | Proposed | Independent review closes critical findings |
 | Roadmap | Active | Updated at every stage gate |
 

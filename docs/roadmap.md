@@ -41,7 +41,7 @@ When evidence becomes stale or a regression is found, move the item back to
 | 2 | Deliver a QUIC end-to-end slice | `IN PROGRESS` | QUIC stream relay, admission composition, bounded configuration, and redacted relay events | Live QUIC workload and datagram evidence |
 | 3 | Preserve streams across QUIC/TLS transitions | `IN PROGRESS` | TLS 1.3/TCP carrier contract and loopback integration test | 10,000 correct fault trials and transition budgets |
 | 4 | Add Forest Native service coexistence | `NOT STARTED` | Threat-model proposal only | Differential probes and independent deployments |
-| 5 | Publish an interoperable protocol preview | `NOT STARTED` | No wire format is defined | Version 0 draft, vectors, two codec consumers, security review |
+| 5 | Publish an interoperable protocol preview | `IN PROGRESS` | v0 draft, bounded codec, and authenticated attachment contract | Canonical vectors, two codec consumers, fuzzing, and security review |
 | 6 | Operate a production candidate | `NOT STARTED` | None | Readiness review and rehearsed rollback |
 
 The current critical path is:
@@ -245,8 +245,8 @@ failures must never require changes to session delivery state.
 
 | ID | Deliverable | Status | Evidence / completion check |
 |---|---|---|---|
-| S5-01 | Frame grammar, state transitions, negotiation, and error registry | `TODO` | Normative draft reviewed against implementation behavior |
-| S5-02 | Security considerations and explicit threat boundaries | `TODO` | Security review scope and assumptions are versioned |
+| S5-01 | Frame grammar, state transitions, negotiation, and error registry | `PARTIAL` | [`protocol-v0.md`](protocol-v0.md), [`velum-protocol`](../crates/velum-protocol), and [`velum-session`](../crates/velum-session) provide a bounded codec, authenticated in-memory frame dispatcher, and error registry; carrier I/O integration and review remain |
+| S5-02 | Security considerations and explicit threat boundaries | `PARTIAL` | [`protocol-v0.md`](protocol-v0.md) states pre-auth, attachment-secret, replay, and no-cross-process-resume boundaries; threat-model review remains |
 | S5-03 | Canonical encoding and state-machine test vectors | `TODO` | Vectors are stable for the preview window |
 | S5-04 | Second codec consumer or independent conformance harness | `TODO` | Both consumers agree on all canonical vectors |
 | S5-05 | Normative requirement-to-test traceability | `TODO` | Every requirement maps to automation or named human review |

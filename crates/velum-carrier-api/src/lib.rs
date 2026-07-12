@@ -65,8 +65,8 @@ pub struct StreamRequest {
 
 /// Narrow asynchronous carrier boundary.
 ///
-/// The associated stream is transport-specific so this crate does not impose a
-/// byte framing format before the protocol layer defines one.
+/// The associated stream is transport-specific. This crate does not encode
+/// bytes; the protocol layer owns v0 frame encoding and decoding.
 pub trait Carrier: Send + Sync {
     type ReliableStream: Send;
 
