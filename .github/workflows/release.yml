@@ -45,12 +45,16 @@ jobs:
         include:
           - platform: linux-x86_64
             runner: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
           - platform: linux-aarch64
             runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
           - platform: darwin-aarch64
             runner: macos-14
+            target: aarch64-apple-darwin
           - platform: darwin-x86_64
-            runner: macos-13
+            runner: macos-26
+            target: x86_64-apple-darwin
     steps:
       - name: Check out repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -58,6 +62,7 @@ jobs:
         run: |
           rustup toolchain install 1.97.0 --profile minimal
           rustup override set 1.97.0
+          rustup target add ${{ matrix.target }}
       - name: Verify release tag matches package version
         if: startsWith(github.ref, 'refs/tags/v')
         shell: bash
@@ -71,12 +76,12 @@ jobs:
       - name: Build velum
         env:
           VELUM_BUILD_REVISION: ${{ github.sha }}
-        run: cargo build --locked --release -p velum-node --bin velum
+        run: cargo build --locked --release --target ${{ matrix.target }} -p velum-node --bin velum
       - name: Package artifact
         shell: bash
         run: |
           mkdir -p dist
-          cp target/release/velum dist/velum
+          cp target/${{ matrix.target }}/release/velum dist/velum
           tar -C dist -czf "velum-${{ github.ref_name }}-${{ matrix.platform }}.tar.gz" velum
           shasum -a 256 "velum-${{ github.ref_name }}-${{ matrix.platform }}.tar.gz" > "velum-${{ github.ref_name }}-${{ matrix.platform }}.tar.gz.sha256"
       - name: Upload packaged binary
