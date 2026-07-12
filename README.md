@@ -85,6 +85,10 @@ Open a new shell after installation, or run `export PATH="$HOME/.local/bin:$PATH
 in the current one. `--add-to-path` changes only the current user's shell
 startup file; omit it when PATH is managed externally.
 
+## Operator Client
+
+A Flutter operator console is available under [`apps/velum_client`](apps/velum_client). It provides a responsive service overview, a versioned TOML configuration editor, activity records, and a native adapter for the existing local CLI controls. Browser builds run in an explicit safe demo mode and never launch local processes.
+
 ## Current Validation
 
 The repository pins Node 22.22.2 and Rust 1.97.0. With `cargo-deny` 0.20.2

@@ -73,6 +73,10 @@ velum status --format json --config /srv/velum/config.toml
 `export PATH="$HOME/.local/bin:$PATH"`。`--add-to-path` 只修改当前用户的 shell
 启动文件；若 PATH 由其他方式统一管理，请省略该选项。
 
+## 运维客户端
+
+仓库在 [`apps/velum_client`](apps/velum_client) 中提供 Flutter 运维客户端，包含响应式服务总览、版本化 TOML 配置编辑、活动记录，以及调用现有本地 CLI 控制命令的原生适配器。浏览器构建会明确使用安全演示模式，绝不会启动本机进程。
+
 ## 当前验证
 
 此仓库固定使用 Node 22.22.2 和 Rust 1.97.0。安装 `cargo-deny` 0.20.2 后，可通过以下命令运行当前所有 Foundation 检查：
