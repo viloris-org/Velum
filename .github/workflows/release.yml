@@ -44,10 +44,10 @@ jobs:
       matrix:
         include:
           - platform: linux-x86_64
-            runner: ubuntu-latest
+            runner: ubuntu-26.04
             target: x86_64-unknown-linux-gnu
           - platform: linux-aarch64
-            runner: ubuntu-24.04-arm
+            runner: ubuntu-26.04-arm
             target: aarch64-unknown-linux-gnu
           - platform: darwin-aarch64
             runner: macos-14
