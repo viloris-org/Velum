@@ -4,6 +4,7 @@
 [![CI Health](https://github.com/viloris-org/Velum/actions/workflows/ci-health.yml/badge.svg?branch=main)](https://github.com/viloris-org/Velum/actions/workflows/ci-health.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
 [![Rust 1.97+](https://img.shields.io/badge/Rust-1.97%2B-orange.svg)](rust-toolchain.toml)
+[![Flutter 3.44.0](https://img.shields.io/badge/Flutter-3.44.0-02569B?logo=flutter&logoColor=white)](https://flutter.dev)
 
 [English](README.md) | [Español](README.es.md) | [日本語](README.ja.md) | [简体中文](README.zh-CN.md)
 
@@ -35,6 +36,47 @@ cargo xtask test
 ```
 
 架构和文档检查也可单独通过 `cargo xtask architecture` 和 `cargo xtask docs` 运行。
+
+## 服务端部署
+
+使用会校验校验和的安装脚本安装已发布的版本。该脚本会将 `velum` 命令安装到
+`~/.local/bin`，并将该目录加入 shell 的 `PATH`。正式发布版请选择 stable 通道，
+预发布版请选择 beta 通道。
+
+> **该选哪个通道？** `stable` 会安装最新的稳定版 `vX.Y.Z`，有稳定版时优先选择它。
+> `beta` 会安装最新的预发布版本，可能包含尚未完成或已变更的行为。两条命令都使用会变动的
+> `--latest`；如需可复现安装，请使用 `--version vX.Y.Z` 或
+> `--version vX.Y.Z-beta`。
+
+### Stable 通道
+
+```bash
+curl --fail --location --remote-name \
+  https://raw.githubusercontent.com/viloris-org/Velum/main/scripts/install.sh
+sh ./install.sh --channel stable --latest --add-to-path
+```
+
+### Beta 通道
+
+```bash
+curl --fail --location --remote-name \
+  https://raw.githubusercontent.com/viloris-org/Velum/main/scripts/install.sh
+sh ./install.sh --channel beta --latest --add-to-path
+```
+
+打开新的 shell 后，可将中继部署为 Linux systemd 用户服务：
+
+```bash
+velum setup --config ~/.config/velum/config.toml
+velum config validate --config ~/.config/velum/config.toml
+velum deploy --config ~/.config/velum/config.toml
+```
+
+`setup` 会创建中继配置与凭据，并配置 TLS 材料。`deploy` 会先校验这些文件，然后创建并
+启动 systemd 用户服务。使用相同的 `--config` 路径执行 `velum status`、`velum drain`
+和 `velum shutdown` 即可管理已部署的中继。若从源码构建，请运行
+`cargo build --release -p velum-node --bin velum`，并在执行相同命令前将
+`./target/release` 加入 `PATH`。
 
 ## 当前非目标
 

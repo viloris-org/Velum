@@ -4,6 +4,7 @@
 [![CI Health](https://github.com/viloris-org/Velum/actions/workflows/ci-health.yml/badge.svg?branch=main)](https://github.com/viloris-org/Velum/actions/workflows/ci-health.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
 [![Rust 1.97+](https://img.shields.io/badge/Rust-1.97%2B-orange.svg)](rust-toolchain.toml)
+[![Flutter 3.44.0](https://img.shields.io/badge/Flutter-3.44.0-02569B?logo=flutter&logoColor=white)](https://flutter.dev)
 
 [English](README.md) | [Español](README.es.md) | [日本語](README.ja.md) | [简体中文](README.zh-CN.md)
 
@@ -42,6 +43,50 @@ cargo xtask test
 
 Architecture and documentation checks are also available independently as
 `cargo xtask architecture` and `cargo xtask docs`.
+
+## Server Deployment
+
+Install a published release with the checksum-verifying installer. It installs
+the `velum` command to `~/.local/bin` and adds that directory to your shell
+PATH. Choose the stable channel for a release version, or the beta channel for
+a prerelease:
+
+> **Which channel should I use?** `stable` installs the newest stable
+> `vX.Y.Z` release and is the preferred choice when one is available. `beta`
+> installs the newest prerelease and may include unfinished or changed
+> behavior. Both commands use a moving `--latest` reference; use
+> `--version vX.Y.Z` or `--version vX.Y.Z-beta` for a reproducible install.
+
+### Stable Channel
+
+```bash
+curl --fail --location --remote-name \
+  https://raw.githubusercontent.com/viloris-org/Velum/main/scripts/install.sh
+sh ./install.sh --channel stable --latest --add-to-path
+```
+
+### Beta Channel
+
+```bash
+curl --fail --location --remote-name \
+  https://raw.githubusercontent.com/viloris-org/Velum/main/scripts/install.sh
+sh ./install.sh --channel beta --latest --add-to-path
+```
+
+Open a new shell, then deploy the relay on Linux as a systemd user service:
+
+```bash
+velum setup --config ~/.config/velum/config.toml
+velum config validate --config ~/.config/velum/config.toml
+velum deploy --config ~/.config/velum/config.toml
+```
+
+`setup` creates the relay configuration and credential, and configures TLS
+material. `deploy` validates those files before creating and starting the
+systemd user service. Use `velum status`, `velum drain`, and `velum shutdown`
+with the same `--config` path to operate the deployed relay. For a source
+build, run `cargo build --release -p velum-node --bin velum` and add
+`./target/release` to your `PATH` before using the same commands.
 
 ## Current Non-Goals
 

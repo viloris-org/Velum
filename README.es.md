@@ -4,6 +4,7 @@
 [![CI Health](https://github.com/viloris-org/Velum/actions/workflows/ci-health.yml/badge.svg?branch=main)](https://github.com/viloris-org/Velum/actions/workflows/ci-health.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
 [![Rust 1.97+](https://img.shields.io/badge/Rust-1.97%2B-orange.svg)](rust-toolchain.toml)
+[![Flutter 3.44.0](https://img.shields.io/badge/Flutter-3.44.0-02569B?logo=flutter&logoColor=white)](https://flutter.dev)
 
 [English](README.md) | [Español](README.es.md) | [日本語](README.ja.md) | [简体中文](README.zh-CN.md)
 
@@ -42,6 +43,52 @@ cargo xtask test
 
 Las comprobaciones de arquitectura y documentación también están disponibles
 por separado como `cargo xtask architecture` y `cargo xtask docs`.
+
+## Despliegue del Servidor
+
+Instale una versión publicada con el instalador que verifica sumas de
+comprobación. Instala el comando `velum` en `~/.local/bin` y añade ese
+directorio al `PATH` de su shell. Elija el canal estable para una versión de
+publicación o el canal beta para una versión preliminar:
+
+> **¿Qué canal debo usar?** `stable` instala la versión estable `vX.Y.Z` más
+> reciente y es la opción preferida cuando está disponible. `beta` instala la
+> versión preliminar más reciente y puede incluir comportamiento sin terminar
+> o cambiado. Ambos comandos usan una referencia `--latest` móvil; use
+> `--version vX.Y.Z` o `--version vX.Y.Z-beta` para una instalación reproducible.
+
+### Canal Estable
+
+```bash
+curl --fail --location --remote-name \
+  https://raw.githubusercontent.com/viloris-org/Velum/main/scripts/install.sh
+sh ./install.sh --channel stable --latest --add-to-path
+```
+
+### Canal Beta
+
+```bash
+curl --fail --location --remote-name \
+  https://raw.githubusercontent.com/viloris-org/Velum/main/scripts/install.sh
+sh ./install.sh --channel beta --latest --add-to-path
+```
+
+Abra una nueva shell y despliegue el relay en Linux como servicio de usuario de
+systemd:
+
+```bash
+velum setup --config ~/.config/velum/config.toml
+velum config validate --config ~/.config/velum/config.toml
+velum deploy --config ~/.config/velum/config.toml
+```
+
+`setup` crea la configuración y la credencial del relay, y configura el
+material TLS. `deploy` valida esos archivos antes de crear e iniciar el
+servicio de usuario de systemd. Use `velum status`, `velum drain` y `velum
+shutdown` con la misma ruta de `--config` para operar el relay desplegado. Para
+una compilación desde código fuente, ejecute `cargo build --release -p
+velum-node --bin velum` y añada `./target/release` a su `PATH` antes de usar
+los mismos comandos.
 
 ## Objetivos que Actualmente No se Persiguen
 

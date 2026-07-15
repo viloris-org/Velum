@@ -4,6 +4,7 @@
 [![CI Health](https://github.com/viloris-org/Velum/actions/workflows/ci-health.yml/badge.svg?branch=main)](https://github.com/viloris-org/Velum/actions/workflows/ci-health.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
 [![Rust 1.97+](https://img.shields.io/badge/Rust-1.97%2B-orange.svg)](rust-toolchain.toml)
+[![Flutter 3.44.0](https://img.shields.io/badge/Flutter-3.44.0-02569B?logo=flutter&logoColor=white)](https://flutter.dev)
 
 [English](README.md) | [Español](README.es.md) | [日本語](README.ja.md) | [简体中文](README.zh-CN.md)
 
@@ -43,6 +44,50 @@ cargo xtask test
 
 アーキテクチャおよびドキュメントのチェックは、それぞれ `cargo xtask architecture`
 および `cargo xtask docs` で個別に実行することもできます。
+
+## サーバーデプロイ
+
+チェックサムを検証するインストーラーで公開リリースをインストールします。`velum`
+コマンドは `~/.local/bin` にインストールされ、そのディレクトリがシェルの `PATH` に
+追加されます。リリース版には stable チャンネルを、プレリリース版には beta
+チャンネルを選択してください。
+
+> **どのチャンネルを使うべきですか？** `stable` は最新の安定版 `vX.Y.Z` を
+> インストールし、利用可能な場合に推奨されます。`beta` は最新のプレリリースを
+> インストールするため、未完成または変更された動作が含まれる場合があります。どちらも
+> 変動する `--latest` を使用します。再現可能なインストールには `--version vX.Y.Z`
+> または `--version vX.Y.Z-beta` を使用してください。
+
+### Stable チャンネル
+
+```bash
+curl --fail --location --remote-name \
+  https://raw.githubusercontent.com/viloris-org/Velum/main/scripts/install.sh
+sh ./install.sh --channel stable --latest --add-to-path
+```
+
+### Beta チャンネル
+
+```bash
+curl --fail --location --remote-name \
+  https://raw.githubusercontent.com/viloris-org/Velum/main/scripts/install.sh
+sh ./install.sh --channel beta --latest --add-to-path
+```
+
+新しいシェルを開き、Linux では relay を systemd ユーザーサービスとしてデプロイします。
+
+```bash
+velum setup --config ~/.config/velum/config.toml
+velum config validate --config ~/.config/velum/config.toml
+velum deploy --config ~/.config/velum/config.toml
+```
+
+`setup` は relay の設定と認証情報を作成し、TLS マテリアルを設定します。`deploy` は
+それらのファイルを検証してから systemd ユーザーサービスを作成して開始します。デプロイ
+済み relay の操作には、同じ `--config` パスで `velum status`、`velum drain`、
+`velum shutdown` を使用します。ソースからビルドする場合は、`cargo build --release -p
+velum-node --bin velum` を実行し、同じコマンドを使う前に `./target/release` を `PATH` に
+追加してください。
 
 ## 現在の非目標
 
