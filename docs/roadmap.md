@@ -4,7 +4,7 @@ Velum advances through evidence gates, not calendar promises. This document is
 both the delivery plan from repository bootstrap to a production candidate and
 the implementation status dashboard.
 
-**Last verified:** 2026-07-11
+**Last verified:** 2026-07-13
 
 ## Status Rules
 
@@ -160,12 +160,12 @@ flow.
 |---|---|---|---|
 | S2-01 | Maintained QUIC/TLS library selected and threat-reviewed | `DONE` | [ADR-0004](adr/0004-quic-carrier.md) records the Quinn 0.11.11 pin, threat review, version policy, and invalidation triggers |
 | S2-02 | `carrier-quic` behind the narrow carrier contract | `PARTIAL` | [`velum-carrier-quic`](../crates/velum-carrier-quic) maps QUIC streams and datagrams behind `velum-carrier-api`; live client/server contract tests remain part of S2-03 |
-| S2-03 | Minimal server and direct client API | `PARTIAL` | [`velum-client-api`](../crates/velum-client-api) exposes direct QUIC streams and datagrams, while [`velum-client-ffi`](../crates/velum-client-ffi) provides Flutter's reviewed native ABI. [`velum-node`](../apps/velum-node) composes exact-target admission with a QUIC stream relay and provides a live Quinn listener accepting independent bidirectional flows. Live client/server workload evidence remains |
-| S2-04 | QUIC streams for reliable flows | `PARTIAL` | [`velum-node`](../apps/velum-node) forwards an authenticated QUIC bidirectional stream to an allowed TCP target and closes all quota leases on every return path; SSH, HTTP, and WebSocket workload evidence remains |
+| S2-03 | Minimal server and direct client API | `PARTIAL` | [`velum-client-api`](../crates/velum-client-api) exposes direct QUIC streams, independent send/receive ownership, connection-closed observation, and datagrams; [`velum-client-runtime`](../crates/velum-client-runtime) owns lifecycle snapshots, managed connection and closure tasks, cancellation, and stale-generation rejection; [`velum-client-ffi`](../crates/velum-client-ffi) exposes ABI v2 synchronous stream and non-blocking runtime lifecycle control plus cancellable full-duplex stream calls. A production server runtime and live client/server workload evidence remain. |
+| S2-04 | QUIC streams for reliable flows | `TODO` | A production server runtime must forward authenticated QUIC bidirectional streams to allowed TCP targets and retain SSH, HTTP, and WebSocket workload evidence. |
 | S2-05 | QUIC datagrams with explicit MTU and oversize behavior | `PARTIAL` | [`velum-carrier-quic`](../crates/velum-carrier-quic) discovers the QUIC DATAGRAM maximum and rejects oversize payloads; DNS-like and real-time UDP live workload evidence remains |
-| S2-06 | Authentication, destination deny-by-default policy, and quotas | `PARTIAL` | [`velum-server`](../crates/velum-server) provides constant-time configured-secret authentication, exact deny-by-default destination allowlists, and per-principal in-memory quotas; [`velum-node`](../apps/velum-node) invokes them before connecting a target. Abuse-load evidence remains |
-| S2-07 | Stable configuration schema and redacted telemetry vocabulary | `PARTIAL` | [`QuicRelayConfig`](../apps/velum-node/src/lib.rs) validates schema version and bounded controls; [`QuicRelayEvent`](../crates/velum-telemetry/src/lib.rs) contains only lifecycle classes. Compatibility and export tests remain |
-| S2-08 | Graceful shutdown, overload shedding, and resource limits | `PARTIAL` | The relay bounds control records, target connection time, and admission quotas, and releases leases after all relay outcomes. The listener closes active endpoints, drains tasks to a validated deadline, then aborts stragglers; load evidence remains |
+| S2-06 | Authentication, destination deny-by-default policy, and quotas | `PARTIAL` | [`velum-server`](../crates/velum-server) provides constant-time configured-secret authentication, exact deny-by-default destination allowlists, and per-principal in-memory quotas. A production application must invoke them before connecting a target; abuse-load evidence remains. |
+| S2-07 | Stable configuration schema and redacted telemetry vocabulary | `PARTIAL` | [`QuicRelayEvent`](../crates/velum-telemetry/src/lib.rs) contains only lifecycle classes. A production application configuration schema, compatibility tests, and export tests remain. |
+| S2-08 | Graceful shutdown, overload shedding, and resource limits | `TODO` | A production relay runtime must bound control records, target connection time, and admission quotas; it must close active endpoints, drain tasks to a validated deadline, and abort stragglers. Retained load evidence is also required. |
 | S2-09 | Comparison against Hysteria 2 and direct QUIC | `TODO` | Stage 0 matrix results retained |
 | S2-10 | Normal-path overhead and overload budgets calibrated | `TODO` | Q-003 and Q-004 evidence retained |
 
@@ -220,7 +220,7 @@ correctness.
 
 | ID | Deliverable | Status | Evidence / completion check |
 |---|---|---|---|
-| S4-01 | Real static-service and reverse-proxy modes | `PARTIAL` | [`velum-forest`](../crates/velum-forest) serves bounded HTTP/1.1 static responses and reverse-proxies cover requests; [`velum-node`](../apps/velum-node) can opt into a bounded TCP listener with a configured reverse-proxy upstream. Loopback coverage runs with `cargo test -p velum-forest -p velum-node`; external TLS termination and deployment evidence remain. [ADR-0011](adr/0011-cover-service-listener-wiring.md) records the boundary. |
+| S4-01 | Real static-service and reverse-proxy modes | `PARTIAL` | [`velum-forest`](../crates/velum-forest) serves bounded HTTP/1.1 static responses and reverse-proxies cover requests. A production application integration, external TLS termination, deployment evidence, and updated loopback coverage remain. [ADR-0011](adr/0011-cover-service-listener-wiring.md) records the boundary. |
 | S4-02 | Encrypted authentication exchange with no clear-text Velum marker | `PARTIAL` | The existing QUIC admission record is processed only after the carrier's TLS handshake, and its application record has no clear-text Velum identifier; raw-wire capture and focused probe review remain |
 | S4-03 | Enabled-versus-disabled differential probe suite | `PARTIAL` | [`velum-forest`](../crates/velum-forest) compares cover responses with traffic profiles enabled and killed for valid, invalid, slow, replayed, and malformed inputs; `cargo test -p velum-forest` passes. Live endpoints and retained probe runs remain |
 | S4-04 | Versioned traffic-profile schema and rotation | `PARTIAL` | [`velum-forest`](../crates/velum-forest) validates versioned, expiring profiles and accepts rotation only through an injected authenticated verifier; `cargo test -p velum-forest` passes. Wire compatibility, deployment authentication integration, and measurements remain; initial scope and AnyTLS-derived constraints are recorded in [`anytls-design-notes.md`](anytls-design-notes.md) |

@@ -19,8 +19,8 @@ questions. Proposed ADRs are not final protocol commitments.
 
 - [Architecture](architecture.md): system boundaries, protocol layers, runtime
   behavior, failure handling, and ownership.
-- [`velum` research CLI](velum-node.md): experimental QUIC relay runtime,
-  configuration boundary, and checksum-verified snapshot installation.
+- [Client architecture evolution](client-architecture.md): target runtime,
+  platform-host, UI, traffic-adapter, and migration boundaries.
 - [ACME operations](acme.md): external Lego DNS-01 issuance, renewal, and
   certificate activation.
 - [Forest Native](forest-native.md): camouflage philosophy, threat model, and
@@ -49,6 +49,9 @@ questions. Proposed ADRs are not final protocol commitments.
 - [ADR-0006: Stage 2 CONNECT adapter](adr/0006-stage2-connect-adapter.md)
 - [ADR-0007: Stage 2 runtime composition](adr/0007-stage2-runtime-composition.md)
 - [ADR-0012: Flutter direct client API](adr/0012-flutter-direct-client-api.md)
+- [ADR-0013: Client runtime and platform host boundary](adr/0013-client-runtime-boundary.md)
+- [ADR-0014: Android TUN data plane](adr/0014-android-tun-data-plane.md)
+- [ADR-0015: Desktop system proxy](adr/0015-desktop-system-proxy.md)
 - [ADR-0011: Cover-service listener wiring](adr/0011-cover-service-listener-wiring.md)
 
 ## Document Status

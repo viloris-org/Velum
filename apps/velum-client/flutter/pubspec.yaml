@@ -10,7 +10,7 @@ dependencies:
   ffi: ^2.2.0
   flutter:
     sdk: flutter
-
+  liquid_glass_bridge: ^0.3.3
 dev_dependencies:
   flutter_test:
     sdk: flutter

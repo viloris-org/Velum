@@ -31,60 +31,6 @@ toggle.
 Start with the [documentation index](docs/README.md) and the
 [implementation status and roadmap](docs/roadmap.md).
 
-## Experimental Operations
-
-The `velum` research CLI can validate a provisioned configuration and deploy it
-as a systemd user service with `velum deploy --config PATH`. This is a local
-process-lifecycle helper, not a production-ready one-click infrastructure
-installer: certificate, secret, DNS, firewall, monitoring, upgrade, and
-rollback provisioning remain operator responsibilities. Read the [operator
-guide](docs/velum-node.md) before using it.
-
-Choose a channel and paste its command. The installer resolves the latest
-published matching release itself:
-
-```bash
-curl --fail --location --remote-name \
-  https://raw.githubusercontent.com/viloris-org/Velum/main/scripts/install.sh && \
-sh ./install.sh --channel stable --latest --add-to-path
-```
-
-```bash
-curl --fail --location --remote-name \
-  https://raw.githubusercontent.com/viloris-org/Velum/main/scripts/install.sh && \
-sh ./install.sh --channel beta --latest --add-to-path
-```
-
-For a reproducible installation, download a reviewed installer from a pinned
-tag and select the exact version:
-
-```bash
-INSTALLER_TAG='vX.Y.Z'
-curl --fail --location --remote-name \
-  "https://raw.githubusercontent.com/viloris-org/Velum/${INSTALLER_TAG}/scripts/install.sh"
-
-sh ./install.sh --channel beta --version vX.Y.Z-beta --add-to-path
-```
-
-The convenience commands fetch the current installer from `main`, and
-`--latest` is a moving reference. The installer prints the resolved tag before
-downloading it; use the pinned form when recording or reproducing an
-installation. When run from an interactive terminal, it starts the installed
-`velum setup` command and opens first-time setup immediately.
-
-After provisioning the configuration, credential file, and PEM material, deploy
-the relay as the current user:
-
-```bash
-velum config validate --config /srv/velum/config.toml
-velum deploy --config /srv/velum/config.toml
-velum status --format json --config /srv/velum/config.toml
-```
-
-Open a new shell after installation, or run `export PATH="$HOME/.local/bin:$PATH"`
-in the current one. `--add-to-path` changes only the current user's shell
-startup file; omit it when PATH is managed externally.
-
 ## Current Validation
 
 The repository pins Node 22.22.2 and Rust 1.97.0. With `cargo-deny` 0.20.2

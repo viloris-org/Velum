@@ -7,7 +7,10 @@ wire format or crate layout.
 
 ```mermaid
 flowchart LR
-    App[Flutter and native applications] --> ClientApi[Versioned client API]
+    App[Flutter and native control applications] --> Host[Platform host]
+    Adapter[Platform traffic adapter] --> Host
+    Host --> Runtime[Client runtime]
+    Runtime --> ClientApi[Versioned direct client API]
     ClientApi --> Client[Velum client engine]
     Client == encrypted carriers ==> Server[Velum server]
     Server --> Internet[Target services]
@@ -26,8 +29,9 @@ real service even when the Velum protocol is disabled.
 
 | Module | Owns | Must not own |
 |---|---|---|
-| `client-api` | Direct in-process client sessions and stream backpressure | Local proxy listeners, session keys, server routing policy |
-| `client-ffi` | Flutter native ABI and opaque-handle validation | QUIC lifecycle, credential parsing, protocol state, or payload retention |
+| `client-runtime` | Client lifecycle state, managed connection and closure observation, cancellation, operation generations, active-client ownership, and runtime snapshots | UI state, OS traffic capture, wire codecs, or server routing policy |
+| `client-api` | Direct in-process client sessions, independently owned stream halves, connection-closed notification, and backpressure | Local proxy listeners, session keys, server routing policy |
+| `client-ffi` | ABI v2 synchronous stream operations, runtime lifecycle adaptation, fixed-layout snapshots, cancellable full-duplex stream calls, and opaque runtime-handle validation | Client lifecycle truth, QUIC lifecycle, credential storage, protocol state, or payload retention |
 | `protocol` | Frame encoding, decoding, version negotiation, and state-machine types | Sockets, timers, cryptographic implementations, routing decisions |
 | `session` | Logical session and flow identity, ordering, acknowledgements needed for migration, replay invariants | Network I/O details or camouflage behavior |
 | `carrier-api` | Narrow contract for opening, sending, receiving, health reporting, and closing carriers | QUIC- or TLS-specific code |
@@ -46,7 +50,8 @@ load-bearing.
 
 ```mermaid
 flowchart TD
-    client-ffi --> client-api
+    client-ffi --> client-runtime
+    client-runtime --> client-api
     client-api --> carrier-quic
     server --> session
     session --> protocol

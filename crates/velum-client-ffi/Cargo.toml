@@ -10,8 +10,12 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 rustls = { version = "=0.23.41", default-features = false, features = ["ring"] }
-tokio = { version = "=1.48.0", features = ["rt-multi-thread", "time"] }
-velum-client-api = { version = "0.0.0", path = "../velum-client-api" }
+tokio = { version = "=1.48.0", features = ["macros", "rt-multi-thread", "sync", "time"] }
+velum-adapter-proxy = { version = "0.0.0", path = "../velum-adapter-proxy" }
+velum-client-runtime = { version = "0.0.0", path = "../velum-client-runtime" }
+
+[dev-dependencies]
+rcgen = "=0.14.7"
 
 [lints.rust]
 unsafe_code = "allow"

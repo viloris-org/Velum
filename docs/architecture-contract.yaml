@@ -62,16 +62,42 @@ modules:
     owner: client-maintainers
     may_depend_on: [carrier-quic, protocol, telemetry]
     public_api: ["crates/velum-client-api/src/lib.rs"]
-    owns: [client-session-api, quic-client-lifecycle, stream-backpressure]
+    owns:
+      - direct-client-api
+      - direct-quic-connection-lifecycle
+      - connection-closed-notification
+      - independent-stream-halves
+      - stream-backpressure
+    risk: critical
+    unsafe_allowed: false
+
+  client-runtime:
+    paths: ["crates/velum-client-runtime/**"]
+    owner: client-maintainers
+    may_depend_on: [client-api, telemetry]
+    public_api: ["crates/velum-client-runtime/src/lib.rs"]
+    owns:
+      - client-lifecycle-state
+      - operation-generations
+      - managed-connection-tasks
+      - transport-closure-observation
+      - active-client-ownership
+      - runtime-snapshots
     risk: critical
     unsafe_allowed: false
 
   client-ffi:
     paths: ["crates/velum-client-ffi/**"]
     owner: client-maintainers
-    may_depend_on: [client-api]
-    public_api: ["crates/velum-client-ffi/src/lib.rs"]
-    owns: [flutter-native-abi, opaque-handle-validation]
+    may_depend_on: [client-runtime, adapters]
+    public_api:
+      - "crates/velum-client-ffi/src/lib.rs"
+      - "crates/velum-client-ffi/include/velum_client.h"
+    owns:
+      - flutter-native-abi
+      - fixed-layout-runtime-snapshots
+      - cancellable-full-duplex-stream-calls
+      - opaque-runtime-handle-validation
     risk: critical
     unsafe_allowed: reviewed-exception
 
@@ -123,7 +149,7 @@ modules:
   adapters:
     paths: ["crates/velum-adapter-*/**"]
     owner: client-maintainers
-    may_depend_on: [session, telemetry]
+    may_depend_on: [client-runtime, session, telemetry]
     public_api: []
     owns: [local-application-integration]
     risk: standard
@@ -139,6 +165,7 @@ modules:
       - forest
       - carrier-quic
       - carrier-tls
+      - client-runtime
       - adapters
       - server
       - telemetry
@@ -157,9 +184,11 @@ forbidden_dependencies:
   - from: carrier-tls
     to: [carrier-quic, policy, session, forest]
   - from: client-api
-    to: [carrier-tls, crypto, forest, policy, server, session]
+    to: [carrier-tls, client-runtime, crypto, forest, policy, server, session]
+  - from: client-runtime
+    to: [carrier-api, carrier-quic, carrier-tls, crypto, forest, policy, protocol, server, session]
   - from: client-ffi
-    to: [carrier-api, carrier-quic, carrier-tls, crypto, forest, policy, protocol, server, session, telemetry]
+    to: [carrier-api, carrier-quic, carrier-tls, client-api, crypto, forest, policy, protocol, server, session, telemetry]
   - from: forest
     to: [crypto, protocol, session, policy]
   - from: policy

@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:ffi';
 import 'dart:io';
 import 'dart:typed_data';
@@ -19,27 +20,101 @@ final class _VelumClientConfigInput extends Struct {
 
   @Uint64()
   external int connectTimeoutMillis;
+
+  @Uint32()
+  external int trustMode;
 }
 
-typedef _AbiVersionNative = Uint16 Function();
-typedef _AbiVersionDart = int Function();
-typedef _ConnectNative = Int32 Function(
-  Pointer<_VelumClientConfigInput>,
-  Pointer<Uint64>,
-);
-typedef _ConnectDart = int Function(
-  Pointer<_VelumClientConfigInput>,
-  Pointer<Uint64>,
-);
-typedef _CloseNative = Int32 Function(Uint64);
-typedef _CloseDart = int Function(int);
+/// Fixed-width snapshot layout shared with `velum-client-ffi` ABI v1.
+final class VelumRuntimeSnapshotV1 extends Struct {
+  @Uint64()
+  external int revision;
 
-class DirectClientConfiguration {
-  const DirectClientConfiguration({
+  @Uint64()
+  external int generation;
+
+  @Uint32()
+  external int phase;
+
+  @Uint32()
+  external int failure;
+}
+
+typedef _RuntimeAbiVersionNative = Uint16 Function();
+typedef _RuntimeAbiVersionDart = int Function();
+typedef _RuntimeCreateNative = Int32 Function(Pointer<Uint64>);
+typedef _RuntimeCreateDart = int Function(Pointer<Uint64>);
+typedef _RuntimeStartV1Native =
+    Int32 Function(Uint64, Pointer<_VelumClientConfigInput>, Pointer<Uint64>);
+typedef _RuntimeStartV1Dart =
+    int Function(int, Pointer<_VelumClientConfigInput>, Pointer<Uint64>);
+typedef _RuntimeSnapshotV1Native =
+    Int32 Function(Uint64, Pointer<VelumRuntimeSnapshotV1>);
+typedef _RuntimeSnapshotV1Dart =
+    int Function(int, Pointer<VelumRuntimeSnapshotV1>);
+typedef _RuntimeStopNative = Int32 Function(Uint64, Pointer<Uint64>);
+typedef _RuntimeStopDart = int Function(int, Pointer<Uint64>);
+typedef _RuntimeDestroyNative = Int32 Function(Uint64);
+typedef _RuntimeDestroyDart = int Function(int);
+typedef _RuntimeProxyStartNative =
+    Int32 Function(Uint64, Uint16, Pointer<Uint16>);
+typedef _RuntimeProxyStartDart = int Function(int, int, Pointer<Uint16>);
+typedef _RuntimeProxyStopNative = Int32 Function(Uint64);
+typedef _RuntimeProxyStopDart = int Function(int);
+
+enum ClientControlStatus {
+  ok,
+  invalidArgument,
+  invalidHandle,
+  configuration,
+  certificate,
+  busy,
+  internal,
+}
+
+enum ClientRuntimePhase { stopped, connecting, online, stopping, failed }
+
+enum ClientTrustMode { system, customCa, insecure }
+
+enum ClientRuntimeFailure {
+  none,
+  certificate,
+  connectTimeout,
+  connection,
+  controlTooLarge,
+  datagramTooLarge,
+  datagramUnavailable,
+  protocol,
+  transport,
+}
+
+class ClientRuntimeSnapshot {
+  const ClientRuntimeSnapshot({
+    required this.revision,
+    required this.generation,
+    required this.phase,
+    required this.failure,
+  });
+
+  const ClientRuntimeSnapshot.stopped()
+    : revision = 0,
+      generation = 0,
+      phase = ClientRuntimePhase.stopped,
+      failure = ClientRuntimeFailure.none;
+
+  final int revision;
+  final int generation;
+  final ClientRuntimePhase phase;
+  final ClientRuntimeFailure failure;
+}
+
+class ClientRuntimeConfiguration {
+  const ClientRuntimeConfiguration({
     required this.libraryPath,
     required this.relayAddress,
     required this.serverName,
     required this.credential,
+    required this.trustMode,
     required this.certificatePem,
     this.connectTimeoutMillis = 5000,
   });
@@ -48,39 +123,81 @@ class DirectClientConfiguration {
   final String relayAddress;
   final String serverName;
   final Uint8List credential;
+  final ClientTrustMode trustMode;
   final Uint8List certificatePem;
   final int connectTimeoutMillis;
 }
 
-class DirectClientException implements Exception {
-  const DirectClientException(this.status);
+class ClientControlException implements Exception {
+  const ClientControlException(this.status, [this.context]);
 
-  final int status;
+  final ClientControlStatus status;
+  final String? context;
 
   @override
-  String toString() => switch (status) {
-    1 => 'The native client received invalid input.',
-    2 => 'The native client handle is no longer valid.',
-    3 => 'The client configuration was rejected.',
-    4 => 'The relay certificate could not be loaded.',
-    5 => 'Connecting to the relay timed out.',
-    6 => 'The relay connection failed.',
-    7 => 'The requested stream control record is too large.',
-    8 => 'A transport error occurred.',
-    9 => 'The datagram is too large for the active path.',
-    10 => 'The active relay connection does not support datagrams.',
-    11 => 'The relay returned an invalid protocol message.',
-    _ => 'The native client returned status $status.',
-  };
+  String toString() {
+    if (context case final context?) return context;
+    return switch (status) {
+      ClientControlStatus.ok => 'The native runtime did not report an error.',
+      ClientControlStatus.invalidArgument =>
+        'The native runtime received invalid input.',
+      ClientControlStatus.invalidHandle =>
+        'The native runtime handle is no longer valid.',
+      ClientControlStatus.configuration =>
+        'The client configuration was rejected.',
+      ClientControlStatus.certificate =>
+        'The relay certificate could not be loaded.',
+      ClientControlStatus.busy =>
+        'The native runtime is already processing a lifecycle command.',
+      ClientControlStatus.internal => 'The native runtime failed internally.',
+    };
+  }
 }
 
-class DirectClient {
-  DirectClient._(this._close, this.handle);
+/// Injectable control surface used by the lifecycle controller.
+abstract interface class ClientRuntimeBridge {
+  int start(ClientRuntimeConfiguration configuration);
 
-  static const int _abiVersion = 1;
+  ClientRuntimeSnapshot snapshot();
 
-  final _CloseDart _close;
+  int stop();
+
+  void destroy();
+}
+
+abstract interface class ClientProxyBridge {
+  int startLoopbackProxy({int requestedPort = 0});
+
+  void stopLoopbackProxy();
+}
+
+/// Hand-written binding for the versioned asynchronous runtime control ABI.
+class NativeClientRuntime implements ClientRuntimeBridge, ClientProxyBridge {
+  NativeClientRuntime._({
+    required _RuntimeStartV1Dart start,
+    required _RuntimeSnapshotV1Dart snapshot,
+    required _RuntimeStopDart stop,
+    required _RuntimeProxyStartDart startProxy,
+    required _RuntimeProxyStopDart stopProxy,
+    required _RuntimeDestroyDart destroy,
+    required this.handle,
+  }) : _start = start,
+       _snapshot = snapshot,
+       _stop = stop,
+       _startProxy = startProxy,
+       _stopProxy = stopProxy,
+       _destroy = destroy;
+
+  static const int _abiVersion = 2;
+
+  final _RuntimeStartV1Dart _start;
+  final _RuntimeSnapshotV1Dart _snapshot;
+  final _RuntimeStopDart _stop;
+  final _RuntimeProxyStartDart _startProxy;
+  final _RuntimeProxyStopDart _stopProxy;
+  final _RuntimeDestroyDart _destroy;
   final int handle;
+  bool _destroyed = false;
 
   static String defaultLibraryName() {
     if (Platform.isMacOS) return 'libvelum_client_ffi.dylib';
@@ -88,30 +205,84 @@ class DirectClient {
     return 'libvelum_client_ffi.so';
   }
 
-  static DirectClient connect(DirectClientConfiguration configuration) {
-    final library = DynamicLibrary.open(configuration.libraryPath);
+  static NativeClientRuntime open(String libraryPath) {
+    final library = DynamicLibrary.open(libraryPath);
     final abiVersion = library
-        .lookup<NativeFunction<_AbiVersionNative>>('velum_client_abi_version')
-        .asFunction<_AbiVersionDart>();
+        .lookup<NativeFunction<_RuntimeAbiVersionNative>>(
+          'velum_client_runtime_abi_version',
+        )
+        .asFunction<_RuntimeAbiVersionDart>();
     if (abiVersion() != _abiVersion) {
-      throw const DirectClientException(3);
+      throw const ClientControlException(
+        ClientControlStatus.configuration,
+        'The native runtime control ABI is unsupported.',
+      );
     }
-    final connect = library
-        .lookup<NativeFunction<_ConnectNative>>('velum_client_connect')
-        .asFunction<_ConnectDart>();
-    final close = library
-        .lookup<NativeFunction<_CloseNative>>('velum_client_close')
-        .asFunction<_CloseDart>();
-    final input = calloc<_VelumClientConfigInput>();
+
+    final create = library
+        .lookup<NativeFunction<_RuntimeCreateNative>>(
+          'velum_client_runtime_create',
+        )
+        .asFunction<_RuntimeCreateDart>();
+    final start = library
+        .lookup<NativeFunction<_RuntimeStartV1Native>>(
+          'velum_client_runtime_start_v1',
+        )
+        .asFunction<_RuntimeStartV1Dart>();
+    final snapshot = library
+        .lookup<NativeFunction<_RuntimeSnapshotV1Native>>(
+          'velum_client_runtime_snapshot_v1',
+        )
+        .asFunction<_RuntimeSnapshotV1Dart>();
+    final stop = library
+        .lookup<NativeFunction<_RuntimeStopNative>>('velum_client_runtime_stop')
+        .asFunction<_RuntimeStopDart>();
+    final destroy = library
+        .lookup<NativeFunction<_RuntimeDestroyNative>>(
+          'velum_client_runtime_destroy',
+        )
+        .asFunction<_RuntimeDestroyDart>();
+    final startProxy = library
+        .lookup<NativeFunction<_RuntimeProxyStartNative>>(
+          'velum_client_runtime_proxy_start',
+        )
+        .asFunction<_RuntimeProxyStartDart>();
+    final stopProxy = library
+        .lookup<NativeFunction<_RuntimeProxyStopNative>>(
+          'velum_client_runtime_proxy_stop',
+        )
+        .asFunction<_RuntimeProxyStopDart>();
+
     final output = calloc<Uint64>();
+    try {
+      _checkStatus(create(output));
+      return NativeClientRuntime._(
+        start: start,
+        snapshot: snapshot,
+        stop: stop,
+        startProxy: startProxy,
+        stopProxy: stopProxy,
+        destroy: destroy,
+        handle: output.value,
+      );
+    } finally {
+      calloc.free(output);
+    }
+  }
+
+  @override
+  int start(ClientRuntimeConfiguration configuration) {
+    _ensureAlive();
+    final input = calloc<_VelumClientConfigInput>();
+    final outputGeneration = calloc<Uint64>();
     final allocations = <_AllocatedBytes>[];
     try {
       final relayAddress = _copy(
-        Uint8List.fromList(configuration.relayAddress.codeUnits),
+        Uint8List.fromList(utf8.encode(configuration.relayAddress)),
         allocations,
       );
       final serverName = _copy(
-        Uint8List.fromList(configuration.serverName.codeUnits),
+        Uint8List.fromList(utf8.encode(configuration.serverName)),
         allocations,
       );
       final credential = _copy(configuration.credential, allocations);
@@ -129,28 +300,85 @@ class DirectClient {
         ..pointer = certificatePem.pointer
         ..length = certificatePem.length;
       input.ref.connectTimeoutMillis = configuration.connectTimeoutMillis;
-      final status = connect(input, output);
-      if (status != 0) throw DirectClientException(status);
-      return DirectClient._(close, output.value);
+      input.ref.trustMode = configuration.trustMode.index;
+
+      _checkStatus(_start(handle, input, outputGeneration));
+      return outputGeneration.value;
     } finally {
       for (final allocation in allocations) {
-        calloc.free(allocation.pointer);
+        allocation.clearAndFree();
       }
-      calloc.free(output);
+      calloc.free(outputGeneration);
       calloc.free(input);
     }
   }
 
-  static DirectClient attach(String libraryPath, int handle) {
-    final close = DynamicLibrary.open(libraryPath)
-        .lookup<NativeFunction<_CloseNative>>('velum_client_close')
-        .asFunction<_CloseDart>();
-    return DirectClient._(close, handle);
+  @override
+  ClientRuntimeSnapshot snapshot() {
+    _ensureAlive();
+    final output = calloc<VelumRuntimeSnapshotV1>();
+    try {
+      _checkStatus(_snapshot(handle, output));
+      return ClientRuntimeSnapshot(
+        revision: output.ref.revision,
+        generation: output.ref.generation,
+        phase: _decodePhase(output.ref.phase),
+        failure: _decodeFailure(output.ref.failure),
+      );
+    } finally {
+      calloc.free(output);
+    }
   }
 
-  void close() {
-    final status = _close(handle);
-    if (status != 0 && status != 2) throw DirectClientException(status);
+  @override
+  int stop() {
+    _ensureAlive();
+    final outputGeneration = calloc<Uint64>();
+    try {
+      _checkStatus(_stop(handle, outputGeneration));
+      return outputGeneration.value;
+    } finally {
+      calloc.free(outputGeneration);
+    }
+  }
+
+  @override
+  int startLoopbackProxy({int requestedPort = 0}) {
+    _ensureAlive();
+    if (requestedPort < 0 || requestedPort > 65535) {
+      throw const ClientControlException(ClientControlStatus.invalidArgument);
+    }
+    final output = calloc<Uint16>();
+    try {
+      _checkStatus(_startProxy(handle, requestedPort, output));
+      return output.value;
+    } finally {
+      calloc.free(output);
+    }
+  }
+
+  @override
+  void stopLoopbackProxy() {
+    _ensureAlive();
+    _checkStatus(_stopProxy(handle));
+  }
+
+  @override
+  void destroy() {
+    if (_destroyed) return;
+    final status = _destroy(handle);
+    if (status == ClientControlStatus.invalidHandle.index) {
+      _destroyed = true;
+      return;
+    }
+    _checkStatus(status);
+    _destroyed = true;
+  }
+
+  void _ensureAlive() {
+    if (_destroyed) {
+      throw const ClientControlException(ClientControlStatus.invalidHandle);
+    }
   }
 
   static _AllocatedBytes _copy(
@@ -166,9 +394,37 @@ class DirectClient {
   }
 }
 
+ClientRuntimePhase _decodePhase(int value) {
+  if (value < 0 || value >= ClientRuntimePhase.values.length) {
+    throw const ClientControlException(ClientControlStatus.internal);
+  }
+  return ClientRuntimePhase.values[value];
+}
+
+ClientRuntimeFailure _decodeFailure(int value) {
+  if (value < 0 || value >= ClientRuntimeFailure.values.length) {
+    throw const ClientControlException(ClientControlStatus.internal);
+  }
+  return ClientRuntimeFailure.values[value];
+}
+
+void _checkStatus(int value) {
+  if (value == ClientControlStatus.ok.index) return;
+  if (value < 0 || value >= ClientControlStatus.values.length) {
+    throw const ClientControlException(ClientControlStatus.internal);
+  }
+  throw ClientControlException(ClientControlStatus.values[value]);
+}
+
 class _AllocatedBytes {
   const _AllocatedBytes(this.pointer, this.length);
 
   final Pointer<Uint8> pointer;
   final int length;
+
+  void clearAndFree() {
+    if (length == 0) return;
+    pointer.asTypedList(length).fillRange(0, length, 0);
+    calloc.free(pointer);
+  }
 }

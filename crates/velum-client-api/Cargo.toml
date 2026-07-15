@@ -6,7 +6,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-quinn = { version = "=0.11.11", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
+quinn = { version = "=0.11.11", default-features = false, features = ["platform-verifier", "runtime-tokio", "rustls-ring"] }
 rustls = { version = "=0.23.41", default-features = false, features = ["ring"] }
 tokio = { version = "=1.48.0", features = ["io-util", "net", "time"] }
 velum-carrier-quic = { version = "0.0.0", path = "../velum-carrier-quic" }

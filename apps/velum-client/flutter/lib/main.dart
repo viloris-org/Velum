@@ -1,48 +1,41 @@
 import 'dart:async';
 import 'dart:io';
-import 'dart:isolate';
 import 'dart:typed_data';
+import 'dart:ui';
 
 import 'package:flutter/material.dart';
 
+import 'client_configuration.dart';
+import 'client_compact_navigation.dart';
+import 'client_controller.dart';
+import 'client_overview.dart';
+import 'client_theme.dart';
 import 'native_client.dart';
+import 'system_proxy.dart';
 
 void main() {
   runApp(const VelumClientApp());
 }
 
 class VelumClientApp extends StatelessWidget {
-  const VelumClientApp({super.key});
+  const VelumClientApp({super.key, this.controller});
+
+  final ClientController? controller;
 
   @override
   Widget build(BuildContext context) {
-    const ink = Color(0xff171717);
-    const gold = Color(0xffb78b1d);
     return MaterialApp(
-      title: 'Velum Client',
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: gold,
-          brightness: Brightness.light,
-        ),
-        scaffoldBackgroundColor: const Color(0xfff7f7f5),
-        useMaterial3: true,
-        textTheme: const TextTheme(
-          headlineMedium: TextStyle(color: ink, fontWeight: FontWeight.w700),
-          titleLarge: TextStyle(color: ink, fontWeight: FontWeight.w600),
-          titleMedium: TextStyle(color: ink, fontWeight: FontWeight.w600),
-          bodyMedium: TextStyle(color: Color(0xff404040)),
-        ),
-      ),
-      home: const ClientHome(),
+      title: 'Velum',
+      theme: ClientTheme.data(),
+      home: ClientHome(controller: controller),
     );
   }
 }
 
-enum ConnectionStateView { disconnected, connecting, connected, failed }
-
 class ClientHome extends StatefulWidget {
-  const ClientHome({super.key});
+  const ClientHome({super.key, this.controller});
+
+  final ClientController? controller;
 
   @override
   State<ClientHome> createState() => _ClientHomeState();
@@ -50,117 +43,370 @@ class ClientHome extends StatefulWidget {
 
 class _ClientHomeState extends State<ClientHome> {
   final _formKey = GlobalKey<FormState>();
-  final _library = TextEditingController(text: DirectClient.defaultLibraryName());
-  final _relay = TextEditingController(text: '127.0.0.1:4433');
-  final _serverName = TextEditingController(text: 'localhost');
-  final _certificate = TextEditingController();
-  final _credential = TextEditingController();
-  final List<String> _logs = ['Ready. Configure a relay before connecting.'];
+  final _library = TextEditingController(
+    text: NativeClientRuntime.defaultLibraryName(),
+  );
+  final _nodes = <RelayNodeDraft>[
+    RelayNodeDraft(
+      name: 'Local relay',
+      relayAddress: '127.0.0.1:4433',
+      serverName: 'localhost',
+    ),
+  ];
 
-  DirectClient? _client;
-  ConnectionStateView _connection = ConnectionStateView.disconnected;
+  late final ClientController _clientController;
+  late ClientRuntimeSnapshot _lastSnapshot;
+  Object? _lastPollingError;
+  var _selectedTab = 0;
+  var _activeNodeIndex = 0;
+  var _insecureTrustAcknowledged = false;
+  var _sidebarExpanded = true;
+  final _systemProxy = SystemProxy();
+  var _systemProxyEnabled = false;
+
+  RelayNodeDraft get _activeNode => _nodes[_activeNodeIndex];
+
+  @override
+  void initState() {
+    super.initState();
+    _clientController = widget.controller ?? ClientController();
+    _lastSnapshot = _clientController.snapshot;
+    _lastPollingError = _clientController.pollingError;
+    _clientController.addListener(_handleControllerChanged);
+  }
 
   @override
   void dispose() {
-    _client?.close();
-    for (final controller in [
-      _library,
-      _relay,
-      _serverName,
-      _certificate,
-      _credential,
-    ]) {
-      controller.dispose();
+    if (_systemProxyEnabled) {
+      unawaited(_systemProxy.disable());
+    }
+    _clientController.removeListener(_handleControllerChanged);
+    _clientController.dispose();
+    _library.dispose();
+    for (final node in _nodes) {
+      node.dispose();
     }
     super.dispose();
   }
 
   Future<void> _toggleConnection() async {
-    if (_connection == ConnectionStateView.connected ||
-        _connection == ConnectionStateView.connecting) {
-      _client?.close();
-      setState(() {
-        _client = null;
-        _connection = ConnectionStateView.disconnected;
-        _appendLog('Disconnected by user.');
-      });
+    final phase = _clientController.snapshot.phase;
+    if (phase == ClientRuntimePhase.stopping) return;
+    if (phase == ClientRuntimePhase.online ||
+        phase == ClientRuntimePhase.connecting) {
+      if (_systemProxyEnabled) await _disableSystemProxy();
+      try {
+        _clientController.stop();
+      } on ClientControlException catch (error) {
+        _reportError(error.toString());
+      } on Object {
+        _reportError('The native runtime could not stop.');
+      }
       return;
     }
-    if (!_formKey.currentState!.validate()) {
+    if (!_hasCompleteConfiguration) {
+      setState(() => _selectedTab = 2);
+      _reportError('Complete the local relay configuration before connecting.');
+      return;
+    }
+    if (_activeNode.trustMode == ClientTrustMode.insecure &&
+        !_insecureTrustAcknowledged) {
+      setState(() => _selectedTab = 2);
+      _reportError(
+        'Acknowledge the insecure connection risk before connecting.',
+      );
+      return;
+    }
+    try {
+      _clientController.start(await _connectionRequest());
+    } on ClientControlException catch (error) {
+      _reportError(error.toString());
+    } on FileSystemException catch (error) {
+      _reportError('Cannot read client configuration: ${error.message}');
+    } on FormatException catch (error) {
+      _reportError('Invalid credential file: ${error.message}');
+    } on Object {
+      _reportError('The native runtime library could not be loaded.');
+    }
+  }
+
+  bool get _hasCompleteConfiguration => [
+    _library.text,
+    _activeNode.relayAddress.text,
+    _activeNode.serverName.text,
+    _activeNode.credentialPath.text,
+    if (_activeNode.trustMode == ClientTrustMode.customCa)
+      _activeNode.certificatePath.text,
+  ].every((value) => value.trim().isNotEmpty);
+
+  Future<ClientRuntimeConfiguration> _connectionRequest() async =>
+      ClientRuntimeConfiguration(
+        libraryPath: _library.text.trim(),
+        relayAddress: _activeNode.relayAddress.text.trim(),
+        serverName: _activeNode.serverName.text.trim(),
+        credential: _decodeCredential(
+          await File(_activeNode.credentialPath.text.trim()).readAsString(),
+        ),
+        trustMode: _activeNode.trustMode,
+        certificatePem: _activeNode.trustMode == ClientTrustMode.customCa
+            ? await File(_activeNode.certificatePath.text.trim()).readAsBytes()
+            : Uint8List(0),
+      );
+
+  void _addNode() {
+    setState(() {
+      _nodes.add(RelayNodeDraft(name: 'Node ${_nodes.length + 1}'));
+      _activeNodeIndex = _nodes.length - 1;
+    });
+  }
+
+  void _removeNode(int index) {
+    if (_nodes.length == 1) return;
+    setState(() {
+      final removed = _nodes.removeAt(index);
+      removed.dispose();
+      if (_activeNodeIndex >= _nodes.length) {
+        _activeNodeIndex = _nodes.length - 1;
+      } else if (index < _activeNodeIndex) {
+        _activeNodeIndex -= 1;
+      }
+    });
+  }
+
+  void _selectActiveNode(int index) => setState(() => _activeNodeIndex = index);
+
+  Future<void> _changeTrustMode(
+    RelayNodeDraft node,
+    ClientTrustMode trustMode,
+  ) async {
+    if (trustMode != ClientTrustMode.insecure || _insecureTrustAcknowledged) {
+      setState(() => node.trustMode = trustMode);
+      return;
+    }
+    final acknowledged = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const _InsecureTrustDialog(),
+    );
+    if (acknowledged == true && mounted) {
+      setState(() {
+        _insecureTrustAcknowledged = true;
+        node.trustMode = ClientTrustMode.insecure;
+      });
+    }
+  }
+
+  void _handleControllerChanged() {
+    if (!mounted) return;
+    final next = _clientController.snapshot;
+    final pollingError = _clientController.pollingError;
+    if (next.revision == _lastSnapshot.revision &&
+        next.generation == _lastSnapshot.generation &&
+        identical(pollingError, _lastPollingError)) {
       return;
     }
     setState(() {
-      _connection = ConnectionStateView.connecting;
-      _appendLog('Connecting through the native client API.');
+      _lastSnapshot = next;
+      _lastPollingError = pollingError;
     });
-    try {
-      final request = await _connectionRequest();
-      final handle = await Isolate.run(() => _connectNative(request));
-      if (!mounted) return;
-      setState(() {
-        _client = DirectClient.attach(request.libraryPath, handle);
-        _connection = ConnectionStateView.connected;
-        _appendLog('Connected through the native client API.');
-      });
-    } on DirectClientException catch (error) {
-      setState(() {
-        _connection = ConnectionStateView.failed;
-        _appendLog(error.toString());
-      });
-    } on FileSystemException catch (error) {
-      setState(() {
-        _connection = ConnectionStateView.failed;
-        _appendLog('Cannot read client configuration: ${error.message}');
-      });
-    } on FormatException catch (error) {
-      setState(() {
-        _connection = ConnectionStateView.failed;
-        _appendLog('Invalid credential file: ${error.message}');
-      });
+    if (_systemProxyEnabled && next.phase != ClientRuntimePhase.online) {
+      _disableSystemProxy();
     }
   }
 
-  Future<_NativeConnectionRequest> _connectionRequest() async =>
-      _NativeConnectionRequest(
-        libraryPath: _library.text.trim(),
-        relayAddress: _relay.text.trim(),
-        serverName: _serverName.text.trim(),
-        credential: _decodeCredential(await File(_credential.text.trim()).readAsString()),
-        certificatePem: await File(_certificate.text.trim()).readAsBytes(),
-      );
-
-  void _appendLog(String message) {
-    _logs.insert(0, '${TimeOfDay.now().format(context)}  $message');
-    if (_logs.length > 20) _logs.removeLast();
+  Future<void> _toggleSystemProxy(bool enabled) async {
+    if (enabled) {
+      if (_clientController.snapshot.phase != ClientRuntimePhase.online) {
+        _reportError('Connect to the relay before enabling the system proxy.');
+        return;
+      }
+      try {
+        final port = _clientController.startLoopbackProxy();
+        await _systemProxy.enable(port);
+        if (!mounted) return;
+        setState(() => _systemProxyEnabled = true);
+      } on Object {
+        try {
+          await _systemProxy.disable();
+        } on Object {
+          // Keep the original failure as the user-visible outcome.
+        }
+        try {
+          _clientController.stopLoopbackProxy();
+        } on Object {
+          // The system setting was not installed, so cleanup is best effort.
+        }
+        _reportError('The system proxy could not be enabled.');
+      }
+      return;
+    }
+    await _disableSystemProxy();
   }
+
+  Future<void> _disableSystemProxy() async {
+    try {
+      await _systemProxy.disable();
+    } on Object {
+      _reportError('The system proxy could not be disabled.');
+      return;
+    }
+    try {
+      _clientController.stopLoopbackProxy();
+    } on Object {
+      // The system setting is already disabled; the native runtime will also
+      // release its listener during stop and destroy.
+    }
+    if (mounted) setState(() => _systemProxyEnabled = false);
+  }
+
+  void _reportError(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  void _selectTab(int index) => setState(() => _selectedTab = index);
+
+  String get _pageTitle => switch (_selectedTab) {
+    0 => 'Overview',
+    1 => 'Nodes',
+    2 => 'Configuration',
+    _ => 'Settings',
+  };
 
   @override
   Widget build(BuildContext context) {
+    final snapshot = _clientController.snapshot;
+    final configurationReady = _hasCompleteConfiguration;
+    final page = switch (_selectedTab) {
+      0 => ClientOverview(
+        snapshot: snapshot,
+        relayAddress: _activeNode.relayAddress.text.trim(),
+        serverName: _activeNode.serverName.text.trim(),
+        configurationReady: configurationReady,
+        onConfigure: () => _selectTab(2),
+      ),
+      1 => _NodesPanel(
+        nodes: _nodes,
+        activeNodeIndex: _activeNodeIndex,
+        editable: const {
+          ClientRuntimePhase.stopped,
+          ClientRuntimePhase.failed,
+        }.contains(snapshot.phase),
+        onSelect: _selectActiveNode,
+        onConfigure: () => _selectTab(2),
+      ),
+      2 => ClientConfigurationPanel(
+        formKey: _formKey,
+        snapshot: snapshot,
+        nodes: _nodes,
+        activeNodeIndex: _activeNodeIndex,
+        onAddNode: _addNode,
+        onRemoveNode: _removeNode,
+        onSelectNode: _selectActiveNode,
+        onTrustModeChanged: _changeTrustMode,
+        library: _library,
+      ),
+      _ => _SettingsPanel(
+        systemProxyEnabled: _systemProxyEnabled,
+        available: Platform.isLinux || Platform.isMacOS || Platform.isWindows,
+        runtimeOnline: snapshot.phase == ClientRuntimePhase.online,
+        onSystemProxyChanged: _toggleSystemProxy,
+      ),
+    };
     return Scaffold(
       body: SafeArea(
         child: LayoutBuilder(
           builder: (context, constraints) {
-            final wide = constraints.maxWidth >= 980;
-            final content = [
-              Expanded(flex: 6, child: _overview()),
-              const SizedBox(width: 20, height: 20),
-              Expanded(flex: 5, child: _configuration()),
-            ];
-            if (wide) {
-              return Padding(
-                padding: const EdgeInsets.all(24),
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: content,
+            final wide = constraints.maxWidth >= 900;
+            final content = Expanded(
+              child: Padding(
+                padding: EdgeInsets.fromLTRB(
+                  wide ? 48 : 24,
+                  36,
+                  wide ? 48 : 24,
+                  wide ? 96 : 176,
                 ),
+                child: page,
+              ),
+            );
+            if (wide) {
+              return Stack(
+                children: [
+                  Row(
+                    children: [
+                      _Sidebar(
+                        selectedIndex: _selectedTab,
+                        onSelected: _selectTab,
+                        online: snapshot.phase == ClientRuntimePhase.online,
+                        expanded: _sidebarExpanded,
+                      ),
+                      Expanded(
+                        child: Column(
+                          children: [
+                            _TopBar(
+                              title: _pageTitle,
+                              snapshot: snapshot,
+                              sidebarExpanded: _sidebarExpanded,
+                              onToggleSidebar: () => setState(
+                                () => _sidebarExpanded = !_sidebarExpanded,
+                              ),
+                            ),
+                            content,
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                  Positioned(
+                    right: 32,
+                    bottom: 28,
+                    child: _ConnectionAction(
+                      snapshot: snapshot,
+                      configurationReady: configurationReady,
+                      onConfigure: () => _selectTab(2),
+                      onToggle: _toggleConnection,
+                    ),
+                  ),
+                ],
               );
             }
-            return ListView(
-              padding: const EdgeInsets.all(24),
+            return Stack(
               children: [
-                _overview(compact: true),
-                const SizedBox(height: 20),
-                _configuration(embedded: true),
+                Column(
+                  children: [
+                    _TopBar(
+                      title: _pageTitle,
+                      snapshot: snapshot,
+                      sidebarExpanded: false,
+                      onToggleSidebar: () {},
+                    ),
+                    content,
+                  ],
+                ),
+                Positioned(
+                  right: 24,
+                  bottom: 92,
+                  child: _ConnectionAction(
+                    snapshot: snapshot,
+                    configurationReady: configurationReady,
+                    onConfigure: () => _selectTab(2),
+                    onToggle: _toggleConnection,
+                  ),
+                ),
+                Positioned(
+                  left: 14,
+                  right: 14,
+                  bottom: 10,
+                  child: SizedBox(
+                    height: 68,
+                    child: ClientCompactNavigation(
+                      selectedIndex: _selectedTab,
+                      onSelected: _selectTab,
+                    ),
+                  ),
+                ),
               ],
             );
           },
@@ -168,249 +414,576 @@ class _ClientHomeState extends State<ClientHome> {
       ),
     );
   }
+}
 
-  Widget _overview({bool compact = false}) {
-    final (label, color, icon) = switch (_connection) {
-      ConnectionStateView.disconnected => (
-        'Disconnected',
-        const Color(0xff5b5b5b),
-        Icons.power_off_outlined,
-      ),
-      ConnectionStateView.connecting => (
-        'Connecting',
-        const Color(0xffa36b00),
-        Icons.sync,
-      ),
-      ConnectionStateView.connected => (
-        'Connected',
-        const Color(0xff167244),
-        Icons.check_circle_outline,
-      ),
-      ConnectionStateView.failed => (
-        'Connection failed',
-        const Color(0xffb42318),
-        Icons.error_outline,
-      ),
-    };
-    return Column(
+class _InsecureTrustDialog extends StatefulWidget {
+  const _InsecureTrustDialog();
+
+  @override
+  State<_InsecureTrustDialog> createState() => _InsecureTrustDialogState();
+}
+
+class _InsecureTrustDialogState extends State<_InsecureTrustDialog> {
+  static const _acknowledgementDelay = Duration(seconds: 3);
+
+  late final Timer _timer;
+  var _remainingSeconds = _acknowledgementDelay.inSeconds;
+  var _understandsRisk = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _timer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (!mounted) return;
+      setState(() {
+        _remainingSeconds -= 1;
+        if (_remainingSeconds == 0) _timer.cancel();
+      });
+    });
+  }
+
+  @override
+  void dispose() {
+    _timer.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+    title: const Text('Insecure connection'),
+    content: Column(
+      mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         const Text(
-          'VELUM',
-          style: TextStyle(fontWeight: FontWeight.w800, letterSpacing: 2.4),
+          'This disables certificate and server-name verification. A malicious network can impersonate the relay and read or alter traffic.',
         ),
-        const SizedBox(height: 26),
-        const Text(
-          'Client control',
-          style: TextStyle(fontSize: 32, fontWeight: FontWeight.w700),
-        ),
-        const SizedBox(height: 8),
-        const Text('Experimental QUIC relay through the direct native client API.'),
-        const SizedBox(height: 28),
-        _statusPanel(label, color, icon),
         const SizedBox(height: 16),
-        FilledButton.icon(
-          onPressed: _toggleConnection,
-          icon: Icon(
-            _connection == ConnectionStateView.connected ||
-                    _connection == ConnectionStateView.connecting
-                ? Icons.stop_circle_outlined
-                : Icons.play_arrow_outlined,
-          ),
-          label: Text(
-            _connection == ConnectionStateView.connected ||
-                    _connection == ConnectionStateView.connecting
-                ? 'Disconnect'
-                : 'Connect',
-          ),
-          style: FilledButton.styleFrom(minimumSize: const Size.fromHeight(48)),
+        CheckboxListTile(
+          contentPadding: EdgeInsets.zero,
+          value: _understandsRisk,
+          onChanged: _remainingSeconds == 0
+              ? (value) => setState(() => _understandsRisk = value ?? false)
+              : null,
+          title: const Text('I understand the risk'),
         ),
-        const SizedBox(height: 20),
-        const Text('Activity'),
-        const SizedBox(height: 8),
-        compact
-            ? SizedBox(height: 220, child: _activityLog())
-            : Expanded(child: _activityLog()),
+        if (_remainingSeconds > 0)
+          Text(
+            'Reviewing risk: $_remainingSeconds s',
+            style: const TextStyle(color: ClientTheme.warning),
+          ),
       ],
-    );
-  }
+    ),
+    actions: [
+      TextButton(
+        onPressed: () => Navigator.of(context).pop(false),
+        child: const Text('Cancel'),
+      ),
+      FilledButton(
+        onPressed: _remainingSeconds == 0 && _understandsRisk
+            ? () => Navigator.of(context).pop(true)
+            : null,
+        child: const Text('I understand the risk'),
+      ),
+    ],
+  );
+}
 
-  Widget _activityLog() {
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        color: Colors.white,
-        border: Border.all(color: const Color(0xffdfdfdf)),
-      ),
-      child: ListView.separated(
-        padding: const EdgeInsets.all(14),
-        itemCount: _logs.length,
-        separatorBuilder: (_, _) => const Divider(height: 16),
-        itemBuilder: (_, index) => Text(
-          _logs[index],
-          style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
-        ),
-      ),
-    );
-  }
+class _Sidebar extends StatelessWidget {
+  const _Sidebar({
+    required this.selectedIndex,
+    required this.onSelected,
+    required this.online,
+    required this.expanded,
+  });
 
-  Widget _statusPanel(String label, Color color, IconData icon) {
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        color: Colors.white,
-        border: Border.all(color: const Color(0xffdfdfdf)),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.all(18),
-        child: Row(
-          children: [
-            Icon(icon, color: color, size: 30),
-            const SizedBox(width: 14),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    label,
-                    style: const TextStyle(
-                      fontWeight: FontWeight.w700,
-                      fontSize: 18,
-                    ),
-                  ),
-                  Text(
-                    _connection == ConnectionStateView.connected
-                        ? 'Flutter holds a direct native client session.'
-                        : 'No traffic is routed while disconnected.',
-                  ),
+  final int selectedIndex;
+  final ValueChanged<int> onSelected;
+  final bool online;
+  final bool expanded;
+
+  @override
+  Widget build(BuildContext context) => SizedBox(
+    width: expanded ? 224 : 72,
+    child: ClipRect(
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          const DecoratedBox(
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                stops: [.0, .42, 1],
+                colors: [
+                  Color(0xff0a3033),
+                  Color(0xff08171d),
+                  ClientTheme.background,
                 ],
               ),
             ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _configuration({bool embedded = false}) {
-    final fields = [
-      const Text(
-        'Relay configuration',
-        style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700),
-      ),
-      const SizedBox(height: 6),
-      const Text(
-        'Credentials stay in the referenced file and are never displayed here.',
-      ),
-      const SizedBox(height: 20),
-      _field(
-        _relay,
-        'Relay address',
-        'IP address and UDP port, e.g. 203.0.113.10:4433',
-      ),
-      _field(
-        _serverName,
-        'TLS server name',
-        'Certificate name presented by the relay',
-      ),
-      _field(
-        _certificate,
-        'CA certificate file',
-        'PEM file used to verify the relay',
-      ),
-      _field(
-        _credential,
-        'Credential file',
-        'Hexadecimal credential supplied by the operator',
-      ),
-      _field(
-        _library,
-        'Native client library',
-        'Path to libvelum_client_ffi for this desktop platform',
-      ),
-      const SizedBox(height: 12),
-      const Text(
-        'This is an experimental Stage 2 direct client API. It is not a production VPN and supports IP-address targets only.',
-        style: TextStyle(color: Color(0xff7a4b00)),
-      ),
-    ];
-    return Form(
-      key: _formKey,
-      child: DecoratedBox(
-        decoration: BoxDecoration(
-          color: Colors.white,
-          border: Border.all(color: const Color(0xffdfdfdf)),
-        ),
-        child: embedded
-            ? Padding(
-                padding: const EdgeInsets.all(20),
+          ),
+          BackdropFilter(
+            filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                color: ClientTheme.panel.withValues(alpha: .56),
+                border: const Border(
+                  right: BorderSide(color: ClientTheme.border),
+                ),
+              ),
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(12, 20, 12, 16),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
-                  children: fields,
+                  children: [
+                    Container(
+                      width: 40,
+                      height: 40,
+                      decoration: BoxDecoration(
+                        color: ClientTheme.accent.withValues(alpha: .11),
+                        border: Border.all(
+                          color: ClientTheme.accent.withValues(alpha: .30),
+                        ),
+                        borderRadius: BorderRadius.circular(9),
+                      ),
+                      child: const Icon(
+                        Icons.shield_outlined,
+                        color: ClientTheme.accent,
+                        size: 21,
+                      ),
+                    ),
+                    const SizedBox(height: 24),
+                    _NavigationItem(
+                      label: 'Overview',
+                      icon: Icons.radar_outlined,
+                      expanded: expanded,
+                      selected: selectedIndex == 0,
+                      onTap: () => onSelected(0),
+                    ),
+                    _NavigationItem(
+                      label: 'Nodes',
+                      icon: Icons.hub_outlined,
+                      expanded: expanded,
+                      selected: selectedIndex == 1,
+                      onTap: () => onSelected(1),
+                    ),
+                    _NavigationItem(
+                      label: 'Config',
+                      icon: Icons.tune_outlined,
+                      expanded: expanded,
+                      selected: selectedIndex == 2,
+                      onTap: () => onSelected(2),
+                    ),
+                    _NavigationItem(
+                      label: 'Settings',
+                      icon: Icons.settings_outlined,
+                      expanded: expanded,
+                      selected: selectedIndex == 3,
+                      onTap: () => onSelected(3),
+                    ),
+                    const Spacer(),
+                    _SidebarStatus(online: online),
+                  ],
                 ),
-              )
-            : ListView(padding: const EdgeInsets.all(20), children: fields),
+              ),
+            ),
+          ),
+        ],
       ),
-    );
-  }
-
-  Widget _field(TextEditingController controller, String label, String helper) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 14),
-      child: TextFormField(
-        controller: controller,
-        enabled:
-            _connection != ConnectionStateView.connected &&
-            _connection != ConnectionStateView.connecting,
-        decoration: InputDecoration(
-          labelText: label,
-          helperText: helper,
-          border: const OutlineInputBorder(),
-        ),
-        validator: (value) => value == null || value.trim().isEmpty
-            ? '$label is required.'
-            : null,
-      ),
-    );
-  }
+    ),
+  );
 }
 
-class _NativeConnectionRequest {
-  const _NativeConnectionRequest({
-    required this.libraryPath,
-    required this.relayAddress,
-    required this.serverName,
-    required this.credential,
-    required this.certificatePem,
+class _NavigationItem extends StatelessWidget {
+  const _NavigationItem({
+    required this.label,
+    required this.icon,
+    required this.selected,
+    required this.expanded,
+    required this.onTap,
   });
 
-  final String libraryPath;
-  final String relayAddress;
-  final String serverName;
-  final Uint8List credential;
-  final Uint8List certificatePem;
+  final String label;
+  final IconData icon;
+  final bool selected;
+  final bool expanded;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.only(bottom: 8),
+    child: Material(
+      color: selected
+          ? ClientTheme.accent.withValues(alpha: .10)
+          : Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        child: SizedBox(
+          height: 44,
+          child: Row(
+            mainAxisAlignment: expanded
+                ? MainAxisAlignment.start
+                : MainAxisAlignment.center,
+            children: [
+              Tooltip(
+                message: expanded ? '' : label,
+                child: Icon(
+                  icon,
+                  size: 20,
+                  color: selected ? ClientTheme.accent : ClientTheme.muted,
+                ),
+              ),
+              if (expanded) ...[
+                const SizedBox(width: 12),
+                Text(
+                  label,
+                  style: TextStyle(
+                    color: selected ? ClientTheme.text : ClientTheme.muted,
+                    fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+    ),
+  );
 }
 
-int _connectNative(_NativeConnectionRequest request) =>
-    DirectClient.connect(
-      DirectClientConfiguration(
-        libraryPath: request.libraryPath,
-        relayAddress: request.relayAddress,
-        serverName: request.serverName,
-        credential: request.credential,
-        certificatePem: request.certificatePem,
+class _SidebarStatus extends StatelessWidget {
+  const _SidebarStatus({required this.online});
+  final bool online;
+
+  @override
+  Widget build(BuildContext context) => Tooltip(
+    message: online ? 'Runtime online' : 'Runtime offline',
+    child: Column(
+      children: [
+        Container(
+          width: 8,
+          height: 8,
+          decoration: BoxDecoration(
+            color: online ? ClientTheme.accent : ClientTheme.danger,
+            shape: BoxShape.circle,
+            boxShadow: [
+              BoxShadow(
+                color: (online ? ClientTheme.accent : ClientTheme.danger)
+                    .withValues(alpha: .45),
+                blurRadius: 8,
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 6),
+        Text(
+          online ? 'ON' : 'OFF',
+          style: TextStyle(
+            color: online ? ClientTheme.accent : ClientTheme.muted,
+            fontSize: 9,
+            fontWeight: FontWeight.w700,
+            letterSpacing: 1,
+          ),
+        ),
+      ],
+    ),
+  );
+}
+
+class _NodesPanel extends StatelessWidget {
+  const _NodesPanel({
+    required this.nodes,
+    required this.activeNodeIndex,
+    required this.editable,
+    required this.onSelect,
+    required this.onConfigure,
+  });
+
+  final List<RelayNodeDraft> nodes;
+  final int activeNodeIndex;
+  final bool editable;
+  final ValueChanged<int> onSelect;
+  final VoidCallback onConfigure;
+
+  @override
+  Widget build(BuildContext context) => ListView(
+    children: [
+      SectionLabel('Nodes'),
+      SizedBox(height: 12),
+      Text(
+        'Relay nodes',
+        style: TextStyle(fontSize: 21, fontWeight: FontWeight.w700),
       ),
-    ).handle;
+      SizedBox(height: 6),
+      Text(
+        'Choose the node used for the next connection. Node credentials remain local to this device.',
+      ),
+      SizedBox(height: 20),
+      ...List.generate(nodes.length, (index) {
+        final node = nodes[index];
+        final active = index == activeNodeIndex;
+        return Padding(
+          padding: const EdgeInsets.only(bottom: 12),
+          child: ClientPanel(
+            child: Material(
+              color: Colors.transparent,
+              child: ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: Icon(
+                  active
+                      ? Icons.radio_button_checked_outlined
+                      : Icons.radio_button_unchecked_outlined,
+                  color: active ? ClientTheme.accent : ClientTheme.muted,
+                ),
+                title: Text(
+                  node.name.text.trim().isEmpty
+                      ? 'Node ${index + 1}'
+                      : node.name.text.trim(),
+                ),
+                subtitle: Text(
+                  node.relayAddress.text.trim().isEmpty
+                      ? 'Incomplete configuration'
+                      : node.relayAddress.text.trim(),
+                ),
+                onTap: editable ? () => onSelect(index) : null,
+              ),
+            ),
+          ),
+        );
+      }),
+      OutlinedButton.icon(
+        onPressed: onConfigure,
+        icon: const Icon(Icons.tune_outlined),
+        label: const Text('Manage nodes'),
+      ),
+    ],
+  );
+}
+
+class _TopBar extends StatelessWidget {
+  const _TopBar({
+    required this.title,
+    required this.snapshot,
+    required this.sidebarExpanded,
+    required this.onToggleSidebar,
+  });
+
+  final String title;
+  final ClientRuntimeSnapshot snapshot;
+  final bool sidebarExpanded;
+  final VoidCallback onToggleSidebar;
+
+  @override
+  Widget build(BuildContext context) => Container(
+    height: 64,
+    width: double.infinity,
+    padding: const EdgeInsets.symmetric(horizontal: 20),
+    decoration: const BoxDecoration(
+      color: ClientTheme.background,
+      border: Border(bottom: BorderSide(color: ClientTheme.border)),
+    ),
+    child: Row(
+      children: [
+        Tooltip(
+          message: sidebarExpanded
+              ? 'Collapse navigation'
+              : 'Expand navigation',
+          child: IconButton(
+            onPressed: onToggleSidebar,
+            icon: Icon(
+              sidebarExpanded ? Icons.menu_open_outlined : Icons.menu_outlined,
+            ),
+          ),
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Text(
+            title,
+            style: const TextStyle(fontWeight: FontWeight.w700),
+          ),
+        ),
+        Text(
+          switch (snapshot.phase) {
+            ClientRuntimePhase.stopped => 'OFFLINE',
+            ClientRuntimePhase.connecting => 'CONNECTING',
+            ClientRuntimePhase.online => 'CONNECTED',
+            ClientRuntimePhase.stopping => 'DISCONNECTING',
+            ClientRuntimePhase.failed => 'CONNECTION FAILED',
+          },
+          style: TextStyle(
+            color: switch (snapshot.phase) {
+              ClientRuntimePhase.online => ClientTheme.accent,
+              ClientRuntimePhase.connecting => ClientTheme.warning,
+              ClientRuntimePhase.failed => ClientTheme.danger,
+              ClientRuntimePhase.stopped ||
+              ClientRuntimePhase.stopping => ClientTheme.muted,
+            },
+            fontSize: 11,
+            fontWeight: FontWeight.w700,
+          ),
+        ),
+      ],
+    ),
+  );
+}
+
+class _ConnectionAction extends StatelessWidget {
+  const _ConnectionAction({
+    required this.snapshot,
+    required this.configurationReady,
+    required this.onConfigure,
+    required this.onToggle,
+  });
+
+  final ClientRuntimeSnapshot snapshot;
+  final bool configurationReady;
+  final VoidCallback onConfigure;
+  final Future<void> Function() onToggle;
+
+  @override
+  Widget build(BuildContext context) {
+    final stopping = snapshot.phase == ClientRuntimePhase.stopping;
+    final active = switch (snapshot.phase) {
+      ClientRuntimePhase.connecting || ClientRuntimePhase.online => true,
+      ClientRuntimePhase.stopped ||
+      ClientRuntimePhase.stopping ||
+      ClientRuntimePhase.failed => false,
+    };
+    final needsConfiguration = !active && !stopping && !configurationReady;
+    final label = stopping
+        ? 'STOPPING'
+        : active
+        ? 'STOP'
+        : needsConfiguration
+        ? 'CONFIGURE'
+        : 'START';
+    final icon = stopping
+        ? const SizedBox(
+            width: 18,
+            height: 18,
+            child: CircularProgressIndicator(strokeWidth: 2),
+          )
+        : Icon(
+            active
+                ? Icons.stop_rounded
+                : needsConfiguration
+                ? Icons.tune_rounded
+                : Icons.play_arrow_rounded,
+          );
+
+    return Tooltip(
+      message: active
+          ? 'Stop connection'
+          : needsConfiguration
+          ? 'Configure connection'
+          : 'Start connection',
+      child: SizedBox(
+        key: const ValueKey('connection-action'),
+        width: 132,
+        height: 52,
+        child: FilledButton.icon(
+          onPressed: stopping
+              ? null
+              : needsConfiguration
+              ? onConfigure
+              : onToggle,
+          style: FilledButton.styleFrom(
+            backgroundColor: active
+                ? ClientTheme.danger
+                : needsConfiguration
+                ? ClientTheme.warning
+                : ClientTheme.accent,
+            foregroundColor: ClientTheme.background,
+          ),
+          icon: icon,
+          label: Text(label),
+        ),
+      ),
+    );
+  }
+}
+
+class _SettingsPanel extends StatelessWidget {
+  const _SettingsPanel({
+    required this.systemProxyEnabled,
+    required this.available,
+    required this.runtimeOnline,
+    required this.onSystemProxyChanged,
+  });
+
+  final bool systemProxyEnabled;
+  final bool available;
+  final bool runtimeOnline;
+  final ValueChanged<bool> onSystemProxyChanged;
+
+  @override
+  Widget build(BuildContext context) => ListView(
+    children: [
+      const SectionLabel('Settings'),
+      const SizedBox(height: 12),
+      const Text(
+        'Settings',
+        style: TextStyle(fontSize: 21, fontWeight: FontWeight.w700),
+      ),
+      const SizedBox(height: 6),
+      const Text('This local client does not require an account.'),
+      const SizedBox(height: 20),
+      ClientPanel(
+        child: SwitchListTile(
+          contentPadding: EdgeInsets.zero,
+          title: const Text('System proxy'),
+          subtitle: Text(
+            !available
+                ? 'System proxy is unavailable on this platform.'
+                : !runtimeOnline
+                ? 'Connect to the relay before enabling the system proxy.'
+                : 'Enable IP-literal CONNECT and SOCKS traffic through the active relay.',
+          ),
+          value: systemProxyEnabled,
+          onChanged: available && runtimeOnline ? onSystemProxyChanged : null,
+        ),
+      ),
+      const SizedBox(height: 16),
+      ClientPanel(
+        child: const Padding(
+          padding: EdgeInsets.zero,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'About Velum',
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
+              ),
+              SizedBox(height: 12),
+              Text('Experimental encrypted-tunneling client.'),
+              SizedBox(height: 8),
+              Text(
+                'Apache-2.0 licensed. All configuration remains on this device.',
+              ),
+            ],
+          ),
+        ),
+      ),
+    ],
+  );
+}
 
 Uint8List _decodeCredential(String value) {
   final encoded = value.trim();
   if (encoded.isEmpty || encoded.length.isOdd) {
-    throw const FormatException('credential must contain hexadecimal byte pairs');
+    throw const FormatException(
+      'credential must contain hexadecimal byte pairs',
+    );
   }
   final credential = Uint8List(encoded.length ~/ 2);
   for (var index = 0; index < credential.length; index += 1) {
     final pair = encoded.substring(index * 2, index * 2 + 2);
     final byte = int.tryParse(pair, radix: 16);
     if (byte == null) {
-      throw const FormatException('credential must contain hexadecimal byte pairs');
+      throw const FormatException(
+        'credential must contain hexadecimal byte pairs',
+      );
     }
     credential[index] = byte;
   }

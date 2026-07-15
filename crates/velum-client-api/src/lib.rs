@@ -6,10 +6,16 @@
 
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 
-use rustls::{RootCertStore, pki_types::CertificateDer};
+use rustls::{
+    RootCertStore,
+    client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier},
+    pki_types::{CertificateDer, ServerName, UnixTime},
+};
 use tokio::time::timeout;
 use velum_carrier_quic::QuicTransportProfile;
-use velum_protocol::{Datagram, DatagramSessionId};
+use velum_protocol::Datagram;
+
+pub use velum_protocol::DatagramSessionId;
 
 const MAX_CREDENTIAL_BYTES: usize = 128;
 const OPEN_HEADER_BYTES: usize = 4;
@@ -22,8 +28,18 @@ pub struct ClientConfig {
     relay_address: SocketAddr,
     server_name: String,
     credential: Arc<[u8]>,
-    root_certificates: Vec<CertificateDer<'static>>,
+    trust: ClientTrust,
     connect_timeout: Duration,
+}
+
+/// Server certificate verification source for one connection.
+pub enum ClientTrust {
+    /// Verify against the operating system trust store and the configured name.
+    System,
+    /// Verify against explicit PEM roots supplied by the caller.
+    CustomRoots(Vec<CertificateDer<'static>>),
+    /// Disable all server certificate and name verification.
+    Insecure,
 }
 
 impl ClientConfig {
@@ -32,7 +48,7 @@ impl ClientConfig {
         relay_address: SocketAddr,
         server_name: String,
         credential: Vec<u8>,
-        root_certificates: Vec<CertificateDer<'static>>,
+        trust: ClientTrust,
         connect_timeout: Duration,
     ) -> Result<Self, ClientConfigError> {
         if server_name.is_empty() {
@@ -41,7 +57,7 @@ impl ClientConfig {
         if credential.is_empty() || credential.len() > MAX_CREDENTIAL_BYTES {
             return Err(ClientConfigError::InvalidCredentialLength);
         }
-        if root_certificates.is_empty() {
+        if matches!(&trust, ClientTrust::CustomRoots(certificates) if certificates.is_empty()) {
             return Err(ClientConfigError::MissingRootCertificate);
         }
         if connect_timeout.is_zero() {
@@ -51,7 +67,7 @@ impl ClientConfig {
             relay_address,
             server_name,
             credential: credential.into(),
-            root_certificates,
+            trust,
             connect_timeout,
         })
     }
@@ -88,14 +104,21 @@ pub struct Client {
 impl Client {
     /// Establishes the QUIC connection with the configured certificate roots.
     pub async fn connect(config: ClientConfig) -> Result<Self, ClientError> {
-        let mut roots = RootCertStore::empty();
-        for certificate in config.root_certificates {
-            roots
-                .add(certificate)
-                .map_err(|_| ClientError::Certificate)?;
-        }
-        let mut client_config = quinn::ClientConfig::with_root_certificates(Arc::new(roots))
-            .map_err(|_| ClientError::Certificate)?;
+        let mut client_config = match config.trust {
+            ClientTrust::System => quinn::ClientConfig::try_with_platform_verifier()
+                .map_err(|_| ClientError::Certificate)?,
+            ClientTrust::CustomRoots(certificates) => {
+                let mut roots = RootCertStore::empty();
+                for certificate in certificates {
+                    roots
+                        .add(certificate)
+                        .map_err(|_| ClientError::Certificate)?;
+                }
+                quinn::ClientConfig::with_root_certificates(Arc::new(roots))
+                    .map_err(|_| ClientError::Certificate)?
+            }
+            ClientTrust::Insecure => insecure_client_config()?,
+        };
         let transport = QuicTransportProfile {
             keep_alive_interval: Some(Duration::from_secs(10)),
             ..Default::default()
@@ -186,11 +209,92 @@ impl Client {
     pub fn close(&self) {
         self.connection.close(0_u32.into(), b"velum client closed");
     }
+
+    /// Waits until the QUIC connection closes without exposing transport text.
+    pub async fn closed(&self) -> ClientError {
+        let _ = self.connection.closed().await;
+        ClientError::Connection
+    }
+}
+
+fn insecure_client_config() -> Result<quinn::ClientConfig, ClientError> {
+    let tls = rustls::ClientConfig::builder()
+        .dangerous()
+        .with_custom_certificate_verifier(InsecureServerVerifier::new())
+        .with_no_client_auth();
+    let quic = quinn::crypto::rustls::QuicClientConfig::try_from(tls)
+        .map_err(|_| ClientError::Certificate)?;
+    Ok(quinn::ClientConfig::new(Arc::new(quic)))
+}
+
+/// Intentionally accepts every server certificate for the explicit insecure mode.
+#[derive(Debug)]
+struct InsecureServerVerifier(Arc<rustls::crypto::CryptoProvider>);
+
+impl InsecureServerVerifier {
+    fn new() -> Arc<Self> {
+        Arc::new(Self(Arc::new(rustls::crypto::ring::default_provider())))
+    }
+}
+
+impl ServerCertVerifier for InsecureServerVerifier {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &CertificateDer<'_>,
+        _intermediates: &[CertificateDer<'_>],
+        _server_name: &ServerName<'_>,
+        _ocsp: &[u8],
+        _now: UnixTime,
+    ) -> Result<ServerCertVerified, rustls::Error> {
+        Ok(ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        certificate: &CertificateDer<'_>,
+        signature: &rustls::DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls12_signature(
+            message,
+            certificate,
+            signature,
+            &self.0.signature_verification_algorithms,
+        )
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        certificate: &CertificateDer<'_>,
+        signature: &rustls::DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls13_signature(
+            message,
+            certificate,
+            signature,
+            &self.0.signature_verification_algorithms,
+        )
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        self.0.signature_verification_algorithms.supported_schemes()
+    }
 }
 
 /// A caller-owned reliable stream with explicit backpressure at every I/O call.
 pub struct ClientStream {
     send: quinn::SendStream,
+    receive: quinn::RecvStream,
+}
+
+/// Independently owned reliable send half.
+pub struct ClientSendStream {
+    send: quinn::SendStream,
+}
+
+/// Independently owned reliable receive half.
+pub struct ClientReceiveStream {
     receive: quinn::RecvStream,
 }
 
@@ -203,6 +307,15 @@ pub struct ClientDatagram {
 }
 
 impl ClientStream {
+    pub fn split(self) -> (ClientSendStream, ClientReceiveStream) {
+        (
+            ClientSendStream { send: self.send },
+            ClientReceiveStream {
+                receive: self.receive,
+            },
+        )
+    }
+
     pub async fn write_all(&mut self, bytes: &[u8]) -> Result<(), ClientError> {
         self.send
             .write_all(bytes)
@@ -219,6 +332,28 @@ impl ClientStream {
 
     pub fn finish(&mut self) -> Result<(), ClientError> {
         self.send.finish().map_err(|_| ClientError::Transport)
+    }
+}
+
+impl ClientSendStream {
+    pub async fn write_all(&mut self, bytes: &[u8]) -> Result<(), ClientError> {
+        self.send
+            .write_all(bytes)
+            .await
+            .map_err(|_| ClientError::Transport)
+    }
+
+    pub fn finish(&mut self) -> Result<(), ClientError> {
+        self.send.finish().map_err(|_| ClientError::Transport)
+    }
+}
+
+impl ClientReceiveStream {
+    pub async fn read(&mut self, bytes: &mut [u8]) -> Result<Option<usize>, ClientError> {
+        self.receive
+            .read(bytes)
+            .await
+            .map_err(|_| ClientError::Transport)
     }
 }
 
@@ -252,7 +387,7 @@ mod tests {
                 relay,
                 String::new(),
                 vec![7],
-                vec![certificate.clone()],
+                ClientTrust::CustomRoots(vec![certificate.clone()]),
                 Duration::from_secs(1),
             ),
             Err(ClientConfigError::EmptyServerName)
@@ -262,7 +397,7 @@ mod tests {
                 relay,
                 "relay.example".into(),
                 vec![7; 129],
-                vec![certificate],
+                ClientTrust::CustomRoots(vec![certificate]),
                 Duration::from_secs(1),
             ),
             Err(ClientConfigError::InvalidCredentialLength)
