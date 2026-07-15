@@ -35,11 +35,12 @@ android {
     }
 
     buildTypes {
-        debug {
-            applicationIdSuffix = ".debug"
-        }
         release {
-            signingConfig = signingConfigs.getByName("release")
+            signingConfig = if (System.getenv("ANDROID_KEYSTORE_PATH") == null) {
+                signingConfigs.getByName("debug")
+            } else {
+                signingConfigs.getByName("release")
+            }
         }
     }
 }
