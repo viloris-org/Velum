@@ -35,6 +35,12 @@ call copies it. Native applications can open client streams or datagrams
 through the versioned direct API; the current Flutter UI controls lifecycle and
 renders snapshots. Ordinary HTTP, HTTP CONNECT, and SOCKS5 CONNECT are supported.
 
+The configuration screen also accepts a versioned `.velum-enroll` file on
+desktop and Android. The Android host exposes QR scanning for the identical
+canonical JSON. Native ABI v1 validates the enrollment before Flutter writes
+the per-device credential and optional CA into platform secure storage; the
+source file is removed when the platform grants delete access.
+
 This is not a production VPN or a stable protocol implementation, and an
 `Online` runtime does not imply that system traffic is routed. The runtime does
 observe a later QUIC close and moves that generation to `Failed`, but it does

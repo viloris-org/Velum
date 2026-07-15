@@ -1,0 +1,372 @@
+name: Build release artifacts
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  foundation:
+    name: Foundation gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Set up Node 22.22.2
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .node-version
+      - name: Install pinned Rust toolchain
+        run: |
+          rustup toolchain install 1.97.0 --profile minimal --component clippy,rustfmt
+          rustup override set 1.97.0
+      - name: Install cargo-deny 0.20.2
+        run: cargo install cargo-deny --locked --version 0.20.2
+      - name: Run Foundation gates
+        run: cargo xtask test
+      - name: Test installer release selection
+        run: sh scripts/test-install.sh
+
+  build:
+    name: ${{ matrix.platform }}
+    needs: foundation
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x86_64
+            runner: ubuntu-26.04
+            target: x86_64-unknown-linux-gnu
+            flutter_arch: x64
+            appimage_arch: x86_64
+            client: linux
+            build_node: true
+          - platform: linux-aarch64
+            runner: ubuntu-26.04-arm
+            target: aarch64-unknown-linux-gnu
+            flutter_arch: arm64
+            appimage_arch: aarch64
+            client: linux
+            build_node: true
+          - platform: darwin-aarch64
+            runner: macos-14
+            target: aarch64-apple-darwin
+            client: macos
+            build_node: true
+          - platform: darwin-x86_64
+            runner: macos-26
+            target: x86_64-apple-darwin
+            client: macos
+            build_node: true
+          - platform: windows-x86_64
+            runner: windows-2025
+            target: x86_64-pc-windows-msvc
+            flutter_arch: x64
+            flutter_target: windows-x64
+            client: windows
+            build_node: false
+          - platform: windows-aarch64
+            runner: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            flutter_arch: arm64
+            flutter_target: windows-arm64
+            client: windows
+            build_node: false
+          - platform: android-arm64-v8a
+            runner: ubuntu-26.04
+            target: aarch64-linux-android
+            flutter_target: android-arm64
+            client: android
+            build_node: false
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Install pinned Rust toolchain
+        run: |
+          rustup toolchain install 1.97.0 --profile minimal
+          rustup override set 1.97.0
+          rustup target add ${{ matrix.target }}
+      - name: Install Flutter 3.44.0
+        shell: bash
+        run: |
+          git clone --depth 1 --branch 3.44.0 https://github.com/flutter/flutter.git "$RUNNER_TEMP/flutter"
+          echo "$RUNNER_TEMP/flutter/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/flutter/bin/flutter" config --no-analytics
+          "$RUNNER_TEMP/flutter/bin/flutter" --version
+      - name: Install Linux desktop build dependencies
+        if: matrix.client == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes clang cmake libgtk-3-dev liblzma-dev ninja-build pkg-config rpm
+      - name: Install AppImage tool
+        if: matrix.client == 'linux'
+        shell: bash
+        run: |
+          curl --fail --location --retry 3 \
+            --output "$RUNNER_TEMP/appimagetool.AppImage" \
+            "https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-${{ matrix.appimage_arch }}.AppImage"
+          chmod +x "$RUNNER_TEMP/appimagetool.AppImage"
+      - name: Install Windows installer compiler
+        if: matrix.client == 'windows'
+        shell: pwsh
+        run: choco install nsis --yes --no-progress
+      - name: Configure Android native build
+        if: matrix.client == 'android'
+        shell: bash
+        run: |
+          ndk="${ANDROID_NDK_HOME:-${ANDROID_NDK_LATEST_HOME:-}}"
+          if [[ -z "$ndk" ]]; then
+            ndk="$(find "$ANDROID_HOME/ndk" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)"
+          fi
+          toolchain="$ndk/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          test -x "$toolchain/aarch64-linux-android24-clang"
+          {
+            echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$toolchain/aarch64-linux-android24-clang"
+            echo "CC_aarch64_linux_android=$toolchain/aarch64-linux-android24-clang"
+            echo "AR_aarch64_linux_android=$toolchain/llvm-ar"
+          } >> "$GITHUB_ENV"
+      - name: Verify release tag matches package version
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          expected_version="${GITHUB_REF_NAME#v}"
+          package_version="$(cargo pkgid --package velum-node | sed 's/.*#//')"
+          test "$package_version" = "$expected_version" || {
+            echo "release tag $GITHUB_REF_NAME does not match velum-node version $package_version" >&2
+            exit 1
+          }
+      - name: Build velum
+        if: matrix.build_node
+        env:
+          VELUM_BUILD_REVISION: ${{ github.sha }}
+        run: cargo build --locked --release --target ${{ matrix.target }} -p velum-node --bin velum
+      - name: Build client native library
+        run: cargo build --locked --release --target ${{ matrix.target }} -p velum-client-ffi
+      - name: Fetch client dependencies
+        working-directory: apps/velum-client/flutter
+        run: flutter pub get --enforce-lockfile
+      - name: Build Linux client
+        if: matrix.client == 'linux'
+        working-directory: apps/velum-client/flutter
+        run: flutter build linux --release
+      - name: Build macOS client
+        if: matrix.client == 'macos'
+        working-directory: apps/velum-client/flutter
+        run: flutter build macos --release
+      - name: Build Windows client
+        if: matrix.client == 'windows'
+        working-directory: apps/velum-client/flutter
+        run: flutter build windows --release --target-platform ${{ matrix.flutter_target }}
+      - name: Stage Android native library
+        if: matrix.client == 'android'
+        shell: bash
+        run: |
+          install -Dm755 target/${{ matrix.target }}/release/libvelum_client_ffi.so \
+            apps/velum-client/flutter/android/app/src/main/jniLibs/arm64-v8a/libvelum_client_ffi.so
+      - name: Build Android client
+        if: matrix.client == 'android'
+        working-directory: apps/velum-client/flutter
+        run: flutter build apk --release --target-platform ${{ matrix.flutter_target }}
+      - name: Prepare client payload
+        shell: bash
+        run: |
+          mkdir -p client-dist
+          cp target/${{ matrix.target }}/release/libvelum_client_ffi.* client-dist/
+          case "${{ matrix.client }}" in
+            android)
+              cp apps/velum-client/flutter/build/app/outputs/flutter-apk/app-release.apk "velum-client-${{ github.ref_name }}-${{ matrix.platform }}.apk"
+              ;;
+            windows)
+              cp -R apps/velum-client/flutter/build/windows/${{ matrix.flutter_arch }}/runner/Release client-dist/velum-client
+              cp target/${{ matrix.target }}/release/velum_client_ffi.dll client-dist/velum-client/
+              ;;
+            linux)
+              cp -R apps/velum-client/flutter/build/linux/${{ matrix.flutter_arch }}/release/bundle client-dist/velum-client
+              cp target/${{ matrix.target }}/release/libvelum_client_ffi.so client-dist/velum-client/lib/
+              ;;
+            macos)
+              cp -R apps/velum-client/flutter/build/macos/Build/Products/Release/velum_client.app client-dist/
+              cp target/${{ matrix.target }}/release/libvelum_client_ffi.dylib client-dist/velum_client.app/Contents/Frameworks/
+              ;;
+          esac
+      - name: Package Linux client
+        if: matrix.client == 'linux'
+        shell: bash
+        run: |
+          package_version="$(sed -n 's/^version: //p' apps/velum-client/flutter/pubspec.yaml | cut -d+ -f1)"
+          package_root="$RUNNER_TEMP/velum-client-package"
+          install -d "$package_root/DEBIAN" "$package_root/usr/lib/velum-client" "$package_root/usr/bin" "$package_root/usr/share/applications"
+          cp -a client-dist/velum-client/. "$package_root/usr/lib/velum-client/"
+          ln -s ../lib/velum-client/velum_client "$package_root/usr/bin/velum-client"
+          cat > "$package_root/usr/share/applications/velum-client.desktop" <<'EOF'
+          [Desktop Entry]
+          Type=Application
+          Name=Velum Client
+          Exec=velum-client
+          Categories=Network;
+          EOF
+          deb_arch="${{ matrix.flutter_arch }}"
+          test "$deb_arch" != x64 || deb_arch=amd64
+          test "$deb_arch" != arm64 || deb_arch=arm64
+          cat > "$package_root/DEBIAN/control" <<EOF
+          Package: velum-client
+          Version: $package_version
+          Architecture: $deb_arch
+          Maintainer: Velum
+          Description: Velum desktop client
+          EOF
+          dpkg-deb --build "$package_root" "velum-client-${{ github.ref_name }}-${{ matrix.platform }}.deb"
+          rpm_arch="${{ matrix.appimage_arch }}"
+          rpm_topdir="$RUNNER_TEMP/rpmbuild"
+          install -d "$rpm_topdir/BUILD" "$rpm_topdir/RPMS" "$rpm_topdir/SOURCES" "$rpm_topdir/SPECS" "$rpm_topdir/SRPMS"
+          install -d "$rpm_topdir/SOURCES/root"
+          cp -a "$package_root/usr" "$rpm_topdir/SOURCES/root/"
+          cat > "$rpm_topdir/SPECS/velum-client.spec" <<EOF
+          Name: velum-client
+          Version: $package_version
+          Release: 1
+          Summary: Velum desktop client
+          License: Apache-2.0
+          BuildArch: $rpm_arch
+
+          %description
+          Velum desktop client.
+
+          %install
+          mkdir -p %{buildroot}
+          cp -a %{_sourcedir}/root/. %{buildroot}/
+
+          %files
+          /usr
+          EOF
+          rpmbuild -bb --define "_topdir $rpm_topdir" "$rpm_topdir/SPECS/velum-client.spec"
+          cp "$rpm_topdir/RPMS/$rpm_arch/"*.rpm "velum-client-${{ github.ref_name }}-${{ matrix.platform }}.rpm"
+          appdir="$RUNNER_TEMP/VelumClient.AppDir"
+          install -d "$appdir/usr/bin" "$appdir/usr/lib"
+          cp -a client-dist/velum-client "$appdir/usr/lib/velum-client"
+          ln -s ../lib/velum-client/velum_client "$appdir/usr/bin/velum-client"
+          cat > "$appdir/AppRun" <<'EOF'
+          #!/bin/sh
+          exec "$APPDIR/usr/lib/velum-client/velum_client" "$@"
+          EOF
+          chmod +x "$appdir/AppRun"
+          cp apps/velum-client/flutter/android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png "$appdir/velum-client.png"
+          ln -s velum-client.png "$appdir/.DirIcon"
+          cat > "$appdir/velum-client.desktop" <<'EOF'
+          [Desktop Entry]
+          Type=Application
+          Name=Velum Client
+          Exec=velum-client
+          Icon=velum-client
+          Categories=Network;
+          EOF
+          ARCH="${{ matrix.appimage_arch }}" "$RUNNER_TEMP/appimagetool.AppImage" --appimage-extract-and-run \
+            "$appdir" "velum-client-${{ github.ref_name }}-${{ matrix.platform }}.AppImage"
+      - name: Package macOS client
+        if: matrix.client == 'macos'
+        shell: bash
+        run: |
+          hdiutil create -volname "Velum Client" -srcfolder client-dist -ov -format UDZO \
+            "velum-client-${{ github.ref_name }}-${{ matrix.platform }}.dmg"
+      - name: Package Windows client
+        if: matrix.client == 'windows'
+        shell: pwsh
+        run: |
+          @'
+          OutFile "velum-client-${{ github.ref_name }}-${{ matrix.platform }}.exe"
+          InstallDir "$PROGRAMFILES64\Velum Client"
+          RequestExecutionLevel admin
+          Section
+            SetOutPath "$INSTDIR"
+            File /r "client-dist\velum-client\*.*"
+            CreateShortcut "$DESKTOP\Velum Client.lnk" "$INSTDIR\velum_client.exe"
+          SectionEnd
+          '@ | Set-Content -Path installer.nsi
+          & "${env:ProgramFiles(x86)}\NSIS\makensis.exe" installer.nsi
+      - name: Create client checksum
+        shell: bash
+        run: |
+          case "${{ matrix.client }}" in
+            android) artifact="velum-client-${{ github.ref_name }}-${{ matrix.platform }}.apk" ;;
+            windows) artifact="velum-client-${{ github.ref_name }}-${{ matrix.platform }}.exe" ;;
+            macos) artifact="velum-client-${{ github.ref_name }}-${{ matrix.platform }}.dmg" ;;
+            linux) artifact="velum-client-${{ github.ref_name }}-${{ matrix.platform }}.deb" ;;
+          esac
+          artifacts=("$artifact")
+          if [[ "${{ matrix.client }}" = linux ]]; then
+            artifacts+=(
+              "velum-client-${{ github.ref_name }}-${{ matrix.platform }}.rpm"
+              "velum-client-${{ github.ref_name }}-${{ matrix.platform }}.AppImage"
+            )
+          fi
+          for artifact in "${artifacts[@]}"; do
+            shasum -a 256 "$artifact" > "$artifact.sha256"
+          done
+      - name: Package node artifact
+        if: matrix.build_node
+        shell: bash
+        run: |
+          mkdir -p dist
+          case "${{ matrix.client }}" in
+            windows)
+              cp target/${{ matrix.target }}/release/velum.exe dist/velum.exe
+              tar -C dist -czf "velum-${{ github.ref_name }}-${{ matrix.platform }}.tar.gz" velum.exe
+              ;;
+            *-linux-gnu)
+              cp target/${{ matrix.target }}/release/velum dist/velum
+              tar -C dist -czf "velum-${{ github.ref_name }}-${{ matrix.platform }}.tar.gz" velum
+              ;;
+            *)
+              cp target/${{ matrix.target }}/release/velum dist/velum
+              tar -C dist -czf "velum-${{ github.ref_name }}-${{ matrix.platform }}.tar.gz" velum
+              ;;
+          esac
+          shasum -a 256 "velum-${{ github.ref_name }}-${{ matrix.platform }}.tar.gz" > "velum-${{ github.ref_name }}-${{ matrix.platform }}.tar.gz.sha256"
+      - name: Upload packaged artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: velum-${{ matrix.platform }}
+          path: |
+            velum-${{ github.ref_name }}-${{ matrix.platform }}.tar.gz
+            velum-${{ github.ref_name }}-${{ matrix.platform }}.tar.gz.sha256
+            velum-client-${{ github.ref_name }}-${{ matrix.platform }}.*
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download packaged binaries
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Create checksum manifest
+        run: |
+          cd artifacts
+          cat *.sha256 > SHA256SUMS
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          release_args=()
+          case "$GITHUB_REF_NAME" in
+            *-*) release_args+=(--prerelease) ;;
+          esac
+          gh release create "$GITHUB_REF_NAME" artifacts/*.tar.gz artifacts/*.apk artifacts/*.AppImage artifacts/*.deb artifacts/*.dmg artifacts/*.exe artifacts/*.rpm artifacts/*.sha256 artifacts/SHA256SUMS "${release_args[@]}" --repo "$GITHUB_REPOSITORY" --title "Velum $GITHUB_REF_NAME" --notes "Release from $GITHUB_SHA. Pre-release versions do not establish a stable protocol or support commitment."

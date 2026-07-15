@@ -1,17 +1,21 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 import 'dart:ui';
 
+import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 
 import 'client_configuration.dart';
 import 'client_compact_navigation.dart';
 import 'client_controller.dart';
+import 'client_enrollment.dart';
 import 'client_overview.dart';
 import 'client_profile.dart';
 import 'client_settings.dart';
 import 'client_theme.dart';
+import 'enrollment_scanner.dart';
 import 'native_client.dart';
 import 'traffic_configuration.dart';
 import 'traffic_mode_controller.dart';
@@ -60,16 +64,19 @@ class _ClientHomeState extends State<ClientHome> {
   ];
   final _trafficConfiguration = TrafficConfigurationDraft();
   final _profileRepository = ManagedProfileRepository.defaultForPlatform();
+  final _enrollmentRepository = EnrollmentRepository.defaultForPlatform();
   final _secretStore = ClientSecretStore();
 
   late final ClientController _clientController;
   late final TrafficModeController _trafficController;
   late ClientRuntimeSnapshot _lastSnapshot;
   Object? _lastPollingError;
+  ClientReconnectStatus _lastReconnectStatus =
+      const ClientReconnectStatus.inactive();
   var _selectedTab = 0;
   var _activeNodeIndex = 0;
   var _insecureTrustAcknowledged = false;
-  var _sidebarExpanded = true;
+  var _sidebarExpanded = false;
 
   RelayNodeDraft get _activeNode => _nodes[_activeNodeIndex];
 
@@ -86,8 +93,10 @@ class _ClientHomeState extends State<ClientHome> {
     );
     _lastSnapshot = _clientController.snapshot;
     _lastPollingError = _clientController.pollingError;
+    _lastReconnectStatus = _clientController.reconnectStatus;
     _clientController.addListener(_handleControllerChanged);
     _trafficController.addListener(_handleTrafficChanged);
+    unawaited(_restoreEnrollments());
   }
 
   @override
@@ -142,7 +151,10 @@ class _ClientHomeState extends State<ClientHome> {
       return;
     }
     try {
-      _clientController.start(await _connectionRequest());
+      _clientController.start(
+        await _connectionRequest(),
+        reconnectConfiguration: _connectionRequest,
+      );
     } on ClientControlException catch (error) {
       _reportError(error.toString());
     } on FileSystemException catch (error) {
@@ -241,6 +253,157 @@ class _ClientHomeState extends State<ClientHome> {
     }
   }
 
+  Future<void> _importEnrollmentFile() async {
+    const enrollmentType = XTypeGroup(
+      label: 'Velum enrollment',
+      extensions: ['velum-enroll'],
+      mimeTypes: ['application/json'],
+    );
+    try {
+      final selected = await openFile(
+        acceptedTypeGroups: const [enrollmentType],
+      );
+      if (selected == null) return;
+      final installed = await _installEnrollment(await selected.readAsString());
+      if (!installed) return;
+      var removed = false;
+      try {
+        final source = File(selected.path);
+        if (await source.exists()) {
+          await source.delete();
+          removed = true;
+        }
+      } on Object {
+        // Some platform document providers do not grant delete access.
+      }
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            removed
+                ? 'Enrollment installed and source file removed.'
+                : 'Enrollment installed. Remove the source file from its original location.',
+          ),
+        ),
+      );
+    } on Object catch (error) {
+      _reportError('Enrollment import failed: $error');
+    }
+  }
+
+  Future<void> _scanEnrollment() async {
+    final source = await Navigator.of(context).push<String>(
+      MaterialPageRoute(
+        fullscreenDialog: true,
+        builder: (_) => const EnrollmentScannerPage(),
+      ),
+    );
+    if (source == null || !mounted) return;
+    try {
+      if (await _installEnrollment(source) && mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('Enrollment installed.')));
+      }
+    } on Object catch (error) {
+      _reportError('Enrollment scan failed: $error');
+    }
+  }
+
+  Future<bool> _installEnrollment(String source) async {
+    final codec = NativeEnrollmentCodec.open(_library.text.trim());
+    final enrollment = ClientEnrollment.parseCanonical(codec.normalize(source));
+    final certificate = enrollment.certificatePem == null
+        ? null
+        : Uint8List.fromList(utf8.encode(enrollment.certificatePem!));
+    var stored = false;
+    try {
+      await _secretStore.installEnrollment(
+        credentialReference: enrollment.credentialRef,
+        credential: enrollment.credential,
+        certificateReference: enrollment.certificateRef,
+        certificate: certificate,
+      );
+      stored = true;
+      await _enrollmentRepository.upsert(enrollment.installedNode);
+    } on Object {
+      if (stored) {
+        await _secretStore.removeEnrollment(
+          credentialReference: enrollment.credentialRef,
+          certificateReference: enrollment.certificateRef,
+        );
+      }
+      rethrow;
+    } finally {
+      enrollment.credential.fillRange(0, enrollment.credential.length, 0);
+      certificate?.fillRange(0, certificate.length, 0);
+    }
+    if (!mounted) return false;
+    final node = RelayNodeDraft(
+      id: enrollment.nodeId,
+      name: enrollment.nodeName,
+      relayAddress: enrollment.relayAddress,
+      serverName: enrollment.serverName,
+      credentialRef: enrollment.credentialRef,
+      certificateRef: enrollment.certificateRef ?? '',
+      trustMode: enrollment.trustMode == 'custom-ca'
+          ? ClientTrustMode.customCa
+          : ClientTrustMode.system,
+    );
+    setState(() {
+      final existing = _nodes.indexWhere(
+        (candidate) => candidate.id.text == enrollment.nodeId,
+      );
+      if (existing >= 0) {
+        _nodes[existing].dispose();
+        _nodes[existing] = node;
+        _activeNodeIndex = existing;
+      } else {
+        _nodes.add(node);
+        _activeNodeIndex = _nodes.length - 1;
+      }
+      _selectedTab = 1;
+    });
+    return true;
+  }
+
+  Future<void> _restoreEnrollments() async {
+    try {
+      final installed = await _enrollmentRepository.load();
+      if (!mounted || installed.isEmpty) return;
+      final restored = installed
+          .map(
+            (node) => RelayNodeDraft(
+              id: node.nodeId,
+              name: node.nodeName,
+              relayAddress: node.relayAddress,
+              serverName: node.serverName,
+              credentialRef: node.credentialRef,
+              certificateRef: node.certificateRef ?? '',
+              trustMode: node.trustMode == 'custom-ca'
+                  ? ClientTrustMode.customCa
+                  : ClientTrustMode.system,
+            ),
+          )
+          .toList();
+      setState(() {
+        for (final node in restored) {
+          final existing = _nodes.indexWhere(
+            (candidate) => candidate.id.text == node.id.text,
+          );
+          if (existing >= 0) {
+            _nodes[existing].dispose();
+            _nodes[existing] = node;
+          } else {
+            _nodes.add(node);
+          }
+        }
+      });
+    } on Object catch (error) {
+      _reportError('Installed enrollments could not be restored: $error');
+    }
+  }
+
   void _addNode() {
     setState(() {
       final number = _nodes.length + 1;
@@ -249,8 +412,24 @@ class _ClientHomeState extends State<ClientHome> {
     });
   }
 
-  void _removeNode(int index) {
+  Future<void> _removeNode(int index) async {
     if (_nodes.length == 1) return;
+    final node = _nodes[index];
+    try {
+      await _enrollmentRepository.remove(node.id.text);
+      if (node.credentialRef.text.startsWith('secret://velum/enrollment/')) {
+        await _secretStore.removeEnrollment(
+          credentialReference: node.credentialRef.text,
+          certificateReference: node.certificateRef.text.isEmpty
+              ? null
+              : node.certificateRef.text,
+        );
+      }
+    } on Object catch (error) {
+      _reportError('Node removal failed: $error');
+      return;
+    }
+    if (!mounted) return;
     setState(() {
       final removed = _nodes.removeAt(index);
       removed.dispose();
@@ -289,14 +468,17 @@ class _ClientHomeState extends State<ClientHome> {
     if (!mounted) return;
     final next = _clientController.snapshot;
     final pollingError = _clientController.pollingError;
+    final reconnectStatus = _clientController.reconnectStatus;
     if (next.revision == _lastSnapshot.revision &&
         next.generation == _lastSnapshot.generation &&
-        identical(pollingError, _lastPollingError)) {
+        identical(pollingError, _lastPollingError) &&
+        reconnectStatus == _lastReconnectStatus) {
       return;
     }
     setState(() {
       _lastSnapshot = next;
       _lastPollingError = pollingError;
+      _lastReconnectStatus = reconnectStatus;
     });
   }
 
@@ -354,6 +536,9 @@ class _ClientHomeState extends State<ClientHome> {
         trafficModePhase: _trafficController.phase,
         trafficModeError: _trafficController.error,
         onTrafficModeChanged: _selectTrafficMode,
+        routingMode: _trafficConfiguration.routingMode,
+        onRoutingModeChanged: (mode) =>
+            setState(() => _trafficConfiguration.routingMode = mode),
       ),
       1 => _NodesPanel(
         nodes: _nodes,
@@ -377,9 +562,13 @@ class _ClientHomeState extends State<ClientHome> {
         library: _library,
         profileFile: _profileFile,
         onImportProfile: _importProfile,
+        onImportEnrollment: _importEnrollmentFile,
+        onScanEnrollment: _scanEnrollment,
+        canScanEnrollment: Platform.isAndroid,
       ),
       _ => ClientSettingsPanel(
         controller: _trafficController,
+        reconnectStatus: _clientController.reconnectStatus,
         configuration: _trafficConfiguration,
         onModeChanged: _selectTrafficMode,
         onConfigurationChanged: () => setState(() {}),
@@ -394,9 +583,21 @@ class _ClientHomeState extends State<ClientHome> {
               final content = Expanded(
                 child: Padding(
                   padding: EdgeInsets.fromLTRB(
-                    wide ? 48 : 24,
-                    36,
-                    wide ? 48 : 24,
+                    wide && _selectedTab == 0
+                        ? 16
+                        : wide
+                        ? 48
+                        : _selectedTab == 0
+                        ? 16
+                        : 24,
+                    wide && _selectedTab == 0 ? 0 : 36,
+                    wide && _selectedTab == 0
+                        ? 16
+                        : wide
+                        ? 48
+                        : _selectedTab == 0
+                        ? 16
+                        : 24,
                     wide ? 96 : 176,
                   ),
                   child: page,
@@ -412,6 +613,9 @@ class _ClientHomeState extends State<ClientHome> {
                           onSelected: _selectTab,
                           online: snapshot.phase == ClientRuntimePhase.online,
                           expanded: _sidebarExpanded,
+                          onToggleExpanded: () => setState(
+                            () => _sidebarExpanded = !_sidebarExpanded,
+                          ),
                         ),
                         Expanded(
                           child: Column(
@@ -419,10 +623,9 @@ class _ClientHomeState extends State<ClientHome> {
                               _TopBar(
                                 title: _pageTitle,
                                 snapshot: snapshot,
-                                sidebarExpanded: _sidebarExpanded,
-                                onToggleSidebar: () => setState(
-                                  () => _sidebarExpanded = !_sidebarExpanded,
-                                ),
+                                onEdit: _selectedTab == 0
+                                    ? () => _selectTab(2)
+                                    : null,
                               ),
                               content,
                             ],
@@ -436,7 +639,6 @@ class _ClientHomeState extends State<ClientHome> {
                       child: _ConnectionAction(
                         snapshot: snapshot,
                         configurationReady: configurationReady,
-                        onConfigure: () => _selectTab(2),
                         onToggle: _toggleConnection,
                       ),
                     ),
@@ -450,8 +652,7 @@ class _ClientHomeState extends State<ClientHome> {
                       _TopBar(
                         title: _pageTitle,
                         snapshot: snapshot,
-                        sidebarExpanded: false,
-                        onToggleSidebar: () {},
+                        onEdit: _selectedTab == 0 ? () => _selectTab(2) : null,
                       ),
                       content,
                     ],
@@ -462,16 +663,15 @@ class _ClientHomeState extends State<ClientHome> {
                     child: _ConnectionAction(
                       snapshot: snapshot,
                       configurationReady: configurationReady,
-                      onConfigure: () => _selectTab(2),
                       onToggle: _toggleConnection,
                     ),
                   ),
                   Positioned(
-                    left: 14,
-                    right: 14,
-                    bottom: 10,
+                    left: 0,
+                    right: 0,
+                    bottom: 0,
                     child: SizedBox(
-                      height: 68,
+                      height: 78,
                       child: ClientCompactNavigation(
                         selectedIndex: _selectedTab,
                         onSelected: _selectTab,
@@ -567,16 +767,18 @@ class _Sidebar extends StatelessWidget {
     required this.onSelected,
     required this.online,
     required this.expanded,
+    required this.onToggleExpanded,
   });
 
   final int selectedIndex;
   final ValueChanged<int> onSelected;
   final bool online;
   final bool expanded;
+  final VoidCallback onToggleExpanded;
 
   @override
   Widget build(BuildContext context) => SizedBox(
-    width: expanded ? 224 : 72,
+    width: expanded ? 224 : 78,
     child: ClipRect(
       child: Stack(
         fit: StackFit.expand,
@@ -656,6 +858,16 @@ class _Sidebar extends StatelessWidget {
                     ),
                     const Spacer(),
                     _SidebarStatus(online: online),
+                    const SizedBox(height: 10),
+                    IconButton(
+                      tooltip: expanded
+                          ? 'Collapse navigation'
+                          : 'Expand navigation',
+                      onPressed: onToggleExpanded,
+                      icon: Icon(
+                        expanded ? Icons.menu_open_rounded : Icons.menu_rounded,
+                      ),
+                    ),
                   ],
                 ),
               ),
@@ -834,56 +1046,42 @@ class _NodesPanel extends StatelessWidget {
 }
 
 class _TopBar extends StatelessWidget {
-  const _TopBar({
-    required this.title,
-    required this.snapshot,
-    required this.sidebarExpanded,
-    required this.onToggleSidebar,
-  });
+  const _TopBar({required this.title, required this.snapshot, this.onEdit});
 
   final String title;
   final ClientRuntimeSnapshot snapshot;
-  final bool sidebarExpanded;
-  final VoidCallback onToggleSidebar;
+  final VoidCallback? onEdit;
 
   @override
   Widget build(BuildContext context) => Container(
     height: 64,
     width: double.infinity,
     padding: const EdgeInsets.symmetric(horizontal: 20),
-    decoration: const BoxDecoration(
-      color: ClientTheme.background,
-      border: Border(bottom: BorderSide(color: ClientTheme.border)),
-    ),
+    decoration: const BoxDecoration(color: ClientTheme.background),
     child: Row(
       children: [
-        Tooltip(
-          message: sidebarExpanded
-              ? 'Collapse navigation'
-              : 'Expand navigation',
-          child: IconButton(
-            onPressed: onToggleSidebar,
-            icon: Icon(
-              sidebarExpanded ? Icons.menu_open_outlined : Icons.menu_outlined,
-            ),
-          ),
-        ),
-        const SizedBox(width: 8),
         Expanded(
           child: Text(
             title,
             style: const TextStyle(fontWeight: FontWeight.w700),
           ),
         ),
-        Text(
-          switch (snapshot.phase) {
-            ClientRuntimePhase.stopped => 'OFFLINE',
-            ClientRuntimePhase.connecting => 'CONNECTING',
-            ClientRuntimePhase.online => 'CONNECTED',
-            ClientRuntimePhase.stopping => 'DISCONNECTING',
-            ClientRuntimePhase.failed => 'CONNECTION FAILED',
+        Tooltip(
+          message: switch (snapshot.phase) {
+            ClientRuntimePhase.stopped => 'Offline',
+            ClientRuntimePhase.connecting => 'Connecting',
+            ClientRuntimePhase.online => 'Connected',
+            ClientRuntimePhase.stopping => 'Disconnecting',
+            ClientRuntimePhase.failed => 'Connection failed',
           },
-          style: TextStyle(
+          child: Icon(
+            switch (snapshot.phase) {
+              ClientRuntimePhase.online => Icons.check_circle_rounded,
+              ClientRuntimePhase.connecting => Icons.sync_rounded,
+              ClientRuntimePhase.failed => Icons.error_rounded,
+              ClientRuntimePhase.stopped ||
+              ClientRuntimePhase.stopping => Icons.circle_outlined,
+            },
             color: switch (snapshot.phase) {
               ClientRuntimePhase.online => ClientTheme.accent,
               ClientRuntimePhase.connecting => ClientTheme.warning,
@@ -891,10 +1089,17 @@ class _TopBar extends StatelessWidget {
               ClientRuntimePhase.stopped ||
               ClientRuntimePhase.stopping => ClientTheme.muted,
             },
-            fontSize: 11,
-            fontWeight: FontWeight.w700,
+            size: 30,
           ),
         ),
+        if (onEdit != null) ...[
+          const SizedBox(width: 8),
+          IconButton(
+            tooltip: 'Edit connection',
+            onPressed: onEdit,
+            icon: const Icon(Icons.edit_rounded, size: 19),
+          ),
+        ],
       ],
     ),
   );
@@ -904,13 +1109,11 @@ class _ConnectionAction extends StatelessWidget {
   const _ConnectionAction({
     required this.snapshot,
     required this.configurationReady,
-    required this.onConfigure,
     required this.onToggle,
   });
 
   final ClientRuntimeSnapshot snapshot;
   final bool configurationReady;
-  final VoidCallback onConfigure;
   final Future<void> Function() onToggle;
 
   @override
@@ -927,8 +1130,6 @@ class _ConnectionAction extends StatelessWidget {
         ? 'STOPPING'
         : active
         ? 'STOP'
-        : needsConfiguration
-        ? 'CONFIGURE'
         : 'START';
     final icon = stopping
         ? const SizedBox(
@@ -936,36 +1137,22 @@ class _ConnectionAction extends StatelessWidget {
             height: 18,
             child: CircularProgressIndicator(strokeWidth: 2),
           )
-        : Icon(
-            active
-                ? Icons.stop_rounded
-                : needsConfiguration
-                ? Icons.tune_rounded
-                : Icons.play_arrow_rounded,
-          );
+        : Icon(active ? Icons.stop_rounded : Icons.play_arrow_rounded);
 
     return Tooltip(
       message: active
           ? 'Stop connection'
           : needsConfiguration
-          ? 'Configure connection'
+          ? 'Complete connection configuration to start'
           : 'Start connection',
       child: SizedBox(
         key: const ValueKey('connection-action'),
         width: 132,
         height: 52,
         child: FilledButton.icon(
-          onPressed: stopping
-              ? null
-              : needsConfiguration
-              ? onConfigure
-              : onToggle,
+          onPressed: stopping ? null : onToggle,
           style: FilledButton.styleFrom(
-            backgroundColor: active
-                ? ClientTheme.danger
-                : needsConfiguration
-                ? ClientTheme.warning
-                : ClientTheme.accent,
+            backgroundColor: active ? ClientTheme.danger : ClientTheme.accent,
             foregroundColor: ClientTheme.background,
           ),
           icon: icon,

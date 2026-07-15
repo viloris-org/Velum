@@ -18,9 +18,11 @@ class RoutingRulesPanel extends StatelessWidget {
     child: Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(
-          'Desktop proxy rules',
-          style: Theme.of(context).textTheme.titleMedium,
+        Text('Routing mode', style: Theme.of(context).textTheme.titleMedium),
+        const SizedBox(height: 14),
+        const Text(
+          'Rule mode uses the ordered policy below. Global and Direct apply a single MATCH rule.',
+          style: TextStyle(color: ClientTheme.muted, fontSize: 12),
         ),
         const SizedBox(height: 14),
         SegmentedButton<RoutingMode>(

@@ -20,9 +20,10 @@ trap 'rm -rf "$temporary"' EXIT HUP INT TERM
 
 download() {
     if command -v curl >/dev/null 2>&1; then
-        curl --fail --location --silent --show-error "$1" --output "$2"
+        curl --fail --location --silent --show-error --retry 3 --retry-delay 1 \
+            --retry-all-errors "$1" --output "$2"
     else
-        wget --quiet --output-document="$2" "$1"
+        wget --quiet --tries=4 --output-document="$2" "$1"
     fi
 }
 

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:velum_client/client_controller.dart';
 import 'package:velum_client/native_client.dart';
@@ -91,5 +93,125 @@ void main() {
     runtime.throwOnSnapshot = false;
     await Future<void>.delayed(const Duration(milliseconds: 10));
     expect(controller.pollingError, isNull);
+  });
+
+  test('retries retryable failures with a fresh generation', () async {
+    final runtime = FakeClientRuntime();
+    final controller = ClientController(
+      runtimeFactory: (_) => runtime,
+      pollInterval: const Duration(days: 1),
+      reconnectDelay: const Duration(milliseconds: 1),
+    );
+    addTearDown(controller.dispose);
+
+    controller.start(
+      testRuntimeConfiguration(),
+      reconnectConfiguration: testRuntimeConfiguration,
+    );
+    runtime.current = const ClientRuntimeSnapshot(
+      revision: 2,
+      generation: 1,
+      phase: ClientRuntimePhase.failed,
+      failure: ClientRuntimeFailure.connection,
+    );
+
+    expect(controller.refresh(), isTrue);
+    expect(controller.reconnectStatus.phase, ClientReconnectPhase.waiting);
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+
+    expect(runtime.startCount, 2);
+    expect(controller.snapshot.phase, ClientRuntimePhase.connecting);
+    expect(controller.reconnectStatus.phase, ClientReconnectPhase.reconnecting);
+  });
+
+  test('stopping cancels a scheduled reconnect', () async {
+    final runtime = FakeClientRuntime();
+    final controller = ClientController(
+      runtimeFactory: (_) => runtime,
+      pollInterval: const Duration(days: 1),
+      reconnectDelay: const Duration(milliseconds: 20),
+    );
+    addTearDown(controller.dispose);
+
+    controller.start(
+      testRuntimeConfiguration(),
+      reconnectConfiguration: testRuntimeConfiguration,
+    );
+    runtime.current = const ClientRuntimeSnapshot(
+      revision: 2,
+      generation: 1,
+      phase: ClientRuntimePhase.failed,
+      failure: ClientRuntimeFailure.transport,
+    );
+    controller.refresh();
+    controller.stop();
+    await Future<void>.delayed(const Duration(milliseconds: 30));
+
+    expect(runtime.startCount, 1);
+    expect(controller.reconnectStatus.phase, ClientReconnectPhase.inactive);
+  });
+
+  test(
+    'stopping cancels a reconnect while configuration is resolving',
+    () async {
+      final runtime = FakeClientRuntime();
+      final pending = Completer<ClientRuntimeConfiguration>();
+      final controller = ClientController(
+        runtimeFactory: (_) => runtime,
+        pollInterval: const Duration(days: 1),
+        reconnectDelay: Duration.zero,
+      );
+      addTearDown(controller.dispose);
+
+      controller.start(
+        testRuntimeConfiguration(),
+        reconnectConfiguration: () => pending.future,
+      );
+      runtime.current = const ClientRuntimeSnapshot(
+        revision: 2,
+        generation: 1,
+        phase: ClientRuntimePhase.failed,
+        failure: ClientRuntimeFailure.connection,
+      );
+      controller.refresh();
+      await Future<void>.delayed(Duration.zero);
+      expect(
+        controller.reconnectStatus.phase,
+        ClientReconnectPhase.reconnecting,
+      );
+
+      controller.stop();
+      pending.complete(testRuntimeConfiguration());
+      await Future<void>.delayed(Duration.zero);
+
+      expect(runtime.startCount, 1);
+      expect(controller.snapshot.phase, ClientRuntimePhase.stopped);
+    },
+  );
+
+  test('does not retry certificate failures', () async {
+    final runtime = FakeClientRuntime();
+    final controller = ClientController(
+      runtimeFactory: (_) => runtime,
+      pollInterval: const Duration(days: 1),
+      reconnectDelay: const Duration(milliseconds: 1),
+    );
+    addTearDown(controller.dispose);
+
+    controller.start(
+      testRuntimeConfiguration(),
+      reconnectConfiguration: testRuntimeConfiguration,
+    );
+    runtime.current = const ClientRuntimeSnapshot(
+      revision: 2,
+      generation: 1,
+      phase: ClientRuntimePhase.failed,
+      failure: ClientRuntimeFailure.certificate,
+    );
+    controller.refresh();
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+
+    expect(runtime.startCount, 1);
+    expect(controller.reconnectStatus.phase, ClientReconnectPhase.inactive);
   });
 }

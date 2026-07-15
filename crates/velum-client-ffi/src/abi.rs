@@ -9,6 +9,9 @@ pub const RUNTIME_ABI_VERSION: u16 = 2;
 /// Stable version for the native profile validation and normalization ABI.
 pub const PROFILE_ABI_VERSION: u16 = 3;
 
+/// Stable version for the offline client enrollment validation ABI.
+pub const ENROLLMENT_ABI_VERSION: u16 = 1;
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct VelumByteSlice {

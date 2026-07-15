@@ -11,6 +11,13 @@ use std::{
 use serde::{Deserialize, Serialize};
 use velum_client_routing::{RoutingAction, RoutingPolicy, RoutingRule, RuleMatcher};
 
+mod enrollment;
+
+pub use enrollment::{
+    ENROLLMENT_KIND, ENROLLMENT_VERSION, EnrollmentBundle, EnrollmentNode, EnrollmentTrust,
+    MAX_ENROLLMENT_BYTES,
+};
+
 pub const PROFILE_VERSION: u16 = 1;
 pub const MAX_PROFILE_BYTES: usize = 1024 * 1024;
 pub const MAX_NODES: usize = 128;

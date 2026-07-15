@@ -80,7 +80,7 @@ unsafe fn canonical_profile(input: VelumByteSlice) -> Result<Vec<u8>, VelumProfi
         .map_err(|_| VelumProfileStatus::Internal)
 }
 
-fn status_for_profile(error: velum_client_profile::ProfileError) -> VelumProfileStatus {
+pub(crate) fn status_for_profile(error: velum_client_profile::ProfileError) -> VelumProfileStatus {
     match error.kind() {
         ProfileErrorKind::Syntax => VelumProfileStatus::Syntax,
         ProfileErrorKind::UnsupportedVersion => VelumProfileStatus::UnsupportedVersion,

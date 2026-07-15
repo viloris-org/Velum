@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import 'native_client.dart';
 import 'overview_dashboard.dart';
+import 'traffic_configuration.dart';
 import 'traffic_mode_controller.dart';
 
 class ClientOverview extends StatelessWidget {
@@ -17,6 +18,8 @@ class ClientOverview extends StatelessWidget {
     this.trafficModePhase = TrafficModePhase.inactive,
     this.trafficModeError,
     this.onTrafficModeChanged,
+    this.routingMode = RoutingMode.rule,
+    this.onRoutingModeChanged,
     super.key,
   });
 
@@ -31,6 +34,8 @@ class ClientOverview extends StatelessWidget {
   final TrafficModePhase trafficModePhase;
   final String? trafficModeError;
   final ValueChanged<TrafficMode>? onTrafficModeChanged;
+  final RoutingMode routingMode;
+  final ValueChanged<RoutingMode>? onRoutingModeChanged;
 
   @override
   Widget build(BuildContext context) => OverviewDashboard(
@@ -45,5 +50,7 @@ class ClientOverview extends StatelessWidget {
     trafficModePhase: trafficModePhase,
     trafficModeError: trafficModeError,
     onTrafficModeChanged: onTrafficModeChanged,
+    routingMode: routingMode,
+    onRoutingModeChanged: onRoutingModeChanged,
   );
 }

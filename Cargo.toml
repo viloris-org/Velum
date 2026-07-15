@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "xtask",
+    "apps/velum-node",
     "crates/velum-protocol",
     "crates/velum-crypto",
     "crates/velum-carrier-api",

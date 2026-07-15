@@ -13,9 +13,18 @@ class TrafficSample {
 }
 
 class TrafficChart extends StatelessWidget {
-  const TrafficChart({required this.samples, super.key});
+  const TrafficChart({
+    required this.samples,
+    this.height = 180,
+    this.showLegend = true,
+    this.showAxisLabels = true,
+    super.key,
+  });
 
   final List<TrafficSample> samples;
+  final double height;
+  final bool showLegend;
+  final bool showAxisLabels;
 
   @override
   Widget build(BuildContext context) {
@@ -23,26 +32,34 @@ class TrafficChart extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         SizedBox(
-          height: 180,
+          height: height,
           width: double.infinity,
           child: CustomPaint(
-            painter: _TrafficChartPainter(samples),
+            painter: _TrafficChartPainter(
+              samples,
+              showAxisLabels: showAxisLabels,
+            ),
             child: const SizedBox.expand(),
           ),
         ),
-        const SizedBox(height: 10),
-        const Center(
-          child: Wrap(
-            spacing: 20,
-            children: [
-              _TrafficLegend(
-                color: ClientTheme.trafficDownload,
-                label: 'Download',
-              ),
-              _TrafficLegend(color: ClientTheme.trafficUpload, label: 'Upload'),
-            ],
+        if (showLegend) ...[
+          const SizedBox(height: 10),
+          const Center(
+            child: Wrap(
+              spacing: 20,
+              children: [
+                _TrafficLegend(
+                  color: ClientTheme.trafficDownload,
+                  label: 'Download',
+                ),
+                _TrafficLegend(
+                  color: ClientTheme.trafficUpload,
+                  label: 'Upload',
+                ),
+              ],
+            ),
           ),
-        ),
+        ],
       ],
     );
   }
@@ -69,9 +86,10 @@ class _TrafficLegend extends StatelessWidget {
 }
 
 class _TrafficChartPainter extends CustomPainter {
-  const _TrafficChartPainter(this.samples);
+  const _TrafficChartPainter(this.samples, {required this.showAxisLabels});
 
   final List<TrafficSample> samples;
+  final bool showAxisLabels;
   static const _leftInset = 38.0;
   static const _bottomInset = 22.0;
   static const _topInset = 4.0;
@@ -81,10 +99,10 @@ class _TrafficChartPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     final chart = Rect.fromLTRB(
-      _leftInset,
+      showAxisLabels ? _leftInset : 0,
       _topInset,
       size.width - _rightInset,
-      size.height - _bottomInset,
+      size.height - (showAxisLabels ? _bottomInset : 0),
     );
     _paintGrid(canvas, chart);
     if (samples.isEmpty) {
@@ -112,18 +130,20 @@ class _TrafficChartPainter extends CustomPainter {
     for (var index = 0; index < labels.length; index++) {
       final y = chart.top + chart.height * index / (labels.length - 1);
       canvas.drawLine(Offset(chart.left, y), Offset(chart.right, y), gridPaint);
-      labelPainter.text = TextSpan(
-        text: labels[index],
-        style: const TextStyle(color: ClientTheme.muted, fontSize: 11),
-      );
-      labelPainter.layout();
-      labelPainter.paint(
-        canvas,
-        Offset(
-          chart.left - labelPainter.width - 12,
-          y - labelPainter.height / 2,
-        ),
-      );
+      if (showAxisLabels) {
+        labelPainter.text = TextSpan(
+          text: labels[index],
+          style: const TextStyle(color: ClientTheme.muted, fontSize: 11),
+        );
+        labelPainter.layout();
+        labelPainter.paint(
+          canvas,
+          Offset(
+            chart.left - labelPainter.width - 12,
+            y - labelPainter.height / 2,
+          ),
+        );
+      }
     }
   }
 
@@ -187,5 +207,6 @@ class _TrafficChartPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _TrafficChartPainter oldDelegate) =>
-      oldDelegate.samples != samples;
+      oldDelegate.samples != samples ||
+      oldDelegate.showAxisLabels != showAxisLabels;
 }

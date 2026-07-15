@@ -69,6 +69,9 @@ class ClientConfigurationPanel extends StatelessWidget {
     required this.library,
     required this.profileFile,
     required this.onImportProfile,
+    required this.onImportEnrollment,
+    required this.onScanEnrollment,
+    required this.canScanEnrollment,
     super.key,
   });
 
@@ -83,6 +86,9 @@ class ClientConfigurationPanel extends StatelessWidget {
   final TextEditingController library;
   final TextEditingController profileFile;
   final Future<void> Function() onImportProfile;
+  final Future<void> Function() onImportEnrollment;
+  final Future<void> Function() onScanEnrollment;
+  final bool canScanEnrollment;
 
   bool get _isEditable => const {
     ClientRuntimePhase.stopped,
@@ -109,6 +115,29 @@ class ClientConfigurationPanel extends StatelessWidget {
           ClientPanel(
             child: Column(
               children: [
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      FilledButton.icon(
+                        key: const ValueKey('import-enrollment'),
+                        onPressed: _isEditable ? onImportEnrollment : null,
+                        icon: const Icon(Icons.key_rounded),
+                        label: const Text('Import enrollment'),
+                      ),
+                      if (canScanEnrollment)
+                        OutlinedButton.icon(
+                          key: const ValueKey('scan-enrollment'),
+                          onPressed: _isEditable ? onScanEnrollment : null,
+                          icon: const Icon(Icons.qr_code_scanner_rounded),
+                          label: const Text('Scan QR'),
+                        ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 20),
                 _field(
                   profileFile,
                   'Velum profile YAML',

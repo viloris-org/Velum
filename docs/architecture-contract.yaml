@@ -100,7 +100,11 @@ modules:
     owner: client-maintainers
     may_depend_on: [client-routing]
     public_api: ["crates/velum-client-profile/src/lib.rs"]
-    owns: [client-profile-schema, profile-normalization, node-reference-validation]
+    owns:
+      - client-profile-schema
+      - client-enrollment-schema
+      - profile-normalization
+      - node-reference-validation
     risk: critical
     unsafe_allowed: false
 

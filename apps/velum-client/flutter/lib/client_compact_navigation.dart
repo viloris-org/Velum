@@ -23,7 +23,7 @@ class ClientCompactNavigation extends StatelessWidget {
       return LiquidGlassSurface(
         mode: LiquidGlassMode.androidNative,
         quality: LiquidGlassQuality.medium,
-        borderRadius: BorderRadius.circular(22),
+        borderRadius: BorderRadius.zero,
         padding: const EdgeInsets.all(5),
         elevation: 2,
         tintColor: ClientTheme.panel,
@@ -39,7 +39,7 @@ class ClientCompactNavigation extends StatelessWidget {
   }
 
   Widget _desktopNavigation(Widget navigation) => ClipRRect(
-    borderRadius: BorderRadius.circular(22),
+    borderRadius: BorderRadius.zero,
     child: BackdropFilter(
       filter: ImageFilter.blur(sigmaX: 12, sigmaY: 12),
       child: DecoratedBox(
@@ -48,14 +48,8 @@ class ClientCompactNavigation extends StatelessWidget {
           border: Border.all(
             color: ClientTheme.borderStrong.withValues(alpha: .72),
           ),
-          borderRadius: BorderRadius.circular(22),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withValues(alpha: .20),
-              blurRadius: 14,
-              offset: const Offset(0, 6),
-            ),
-          ],
+          borderRadius: BorderRadius.zero,
+          boxShadow: const [],
         ),
         child: Padding(padding: const EdgeInsets.all(5), child: navigation),
       ),

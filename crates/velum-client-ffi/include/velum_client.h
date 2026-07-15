@@ -91,11 +91,19 @@ typedef struct VelumRuntimeSnapshotV1 {
 uint16_t velum_client_abi_version(void);
 uint16_t velum_client_runtime_abi_version(void);
 uint16_t velum_client_profile_abi_version(void);
+uint16_t velum_client_enrollment_abi_version(void);
 
 VelumProfileStatus velum_client_profile_validate_v1(
     VelumByteSlice input,
     size_t *out_required);
 VelumProfileStatus velum_client_profile_normalize_v1(
+    VelumByteSlice input,
+    VelumMutableByteSlice output,
+    size_t *out_written);
+VelumProfileStatus velum_client_enrollment_validate_v1(
+    VelumByteSlice input,
+    size_t *out_required);
+VelumProfileStatus velum_client_enrollment_normalize_v1(
     VelumByteSlice input,
     VelumMutableByteSlice output,
     size_t *out_written);

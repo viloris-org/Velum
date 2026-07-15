@@ -8,6 +8,7 @@
 mod abi;
 mod configuration;
 mod control;
+mod enrollment;
 mod handles;
 mod profile;
 mod streams;
@@ -18,6 +19,7 @@ use std::sync::OnceLock;
 
 pub use abi::*;
 pub use control::*;
+pub use enrollment::*;
 pub use profile::*;
 pub use streams::*;
 use tokio::runtime::{Builder, Runtime};

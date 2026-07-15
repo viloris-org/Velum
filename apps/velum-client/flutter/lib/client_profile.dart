@@ -135,6 +135,53 @@ final class ClientSecretStore {
 
   final FlutterSecureStorage _storage;
 
+  Future<void> installEnrollment({
+    required String credentialReference,
+    required Uint8List credential,
+    String? certificateReference,
+    Uint8List? certificate,
+  }) async {
+    _validateReference(credentialReference);
+    if ((certificateReference == null) != (certificate == null)) {
+      throw const FormatException('Enrollment certificate is incomplete.');
+    }
+    if (certificateReference != null) _validateReference(certificateReference);
+    if (await _storage.read(key: credentialReference) != null) {
+      throw StateError('This client enrollment is already installed.');
+    }
+    if (certificateReference != null &&
+        await _storage.read(key: certificateReference) != null) {
+      throw StateError('This client enrollment CA is already installed.');
+    }
+    await _storage.write(
+      key: credentialReference,
+      value: _encodeHex(credential),
+    );
+    try {
+      if (certificateReference != null && certificate != null) {
+        await _storage.write(
+          key: certificateReference,
+          value: base64Encode(certificate),
+        );
+      }
+    } on Object {
+      await _storage.delete(key: credentialReference);
+      rethrow;
+    }
+  }
+
+  Future<void> removeEnrollment({
+    required String credentialReference,
+    String? certificateReference,
+  }) async {
+    _validateReference(credentialReference);
+    if (certificateReference != null) _validateReference(certificateReference);
+    await _storage.delete(key: credentialReference);
+    if (certificateReference != null) {
+      await _storage.delete(key: certificateReference);
+    }
+  }
+
   Future<Uint8List> credential(
     String reference, {
     String? migrationFile,

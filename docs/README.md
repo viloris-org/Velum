@@ -23,6 +23,8 @@ questions. Proposed ADRs are not final protocol commitments.
   platform-host, UI, traffic-adapter, and migration boundaries.
 - [ACME operations](acme.md): external Lego DNS-01 issuance, renewal, and
   certificate activation.
+- [`velum` research CLI](velum-node.md): guided relay setup, deployment, and
+  local operator controls.
 - [Forest Native](forest-native.md): camouflage philosophy, threat model, and
   deployment requirements.
 - [TLS fallback evolution](tls-fallback-evolution.md): deferred shaping and
@@ -56,6 +58,7 @@ questions. Proposed ADRs are not final protocol commitments.
 - [ADR-0017: Local traffic routing policy](adr/0017-local-traffic-routing-policy.md)
 - [ADR-0018: Desktop privileged traffic host](adr/0018-desktop-privileged-traffic-host.md)
 - [ADR-0019: Profile and routing evolution](adr/0019-profile-and-routing-evolution.md)
+- [ADR-0020: Offline client enrollment](adr/0020-offline-client-enrollment.md)
 - [Privileged helper protocol v1](helper-protocol-v1.md)
 - [ADR-0011: Cover-service listener wiring](adr/0011-cover-service-listener-wiring.md)
 

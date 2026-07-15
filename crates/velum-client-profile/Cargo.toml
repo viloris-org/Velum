@@ -7,6 +7,7 @@ rust-version.workspace = true
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 serde_yaml_ng = "0.10.0"
 velum-client-routing = { version = "0.0.0", path = "../velum-client-routing" }
 

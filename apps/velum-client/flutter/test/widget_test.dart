@@ -14,10 +14,10 @@ void main() {
     await tester.pumpWidget(const VelumClientApp());
 
     expect(find.text('Overview'), findsAtLeastNWidgets(1));
-    expect(find.text('OFFLINE'), findsOneWidget);
-    expect(find.text('CONFIGURE'), findsOneWidget);
-    expect(find.text('Traffic routing'), findsOneWidget);
-    expect(find.text('Proxy'), findsOneWidget);
+    expect(find.byTooltip('Offline'), findsOneWidget);
+    expect(find.text('CONFIGURE'), findsNothing);
+    expect(find.text('Network speed'), findsOneWidget);
+    expect(find.text('System proxy'), findsOneWidget);
   });
 
   testWidgets('switches between overview, config, and settings', (
@@ -28,21 +28,28 @@ void main() {
     await tester.tap(find.text('Config'));
     await tester.pump();
     expect(find.text('Connection configuration'), findsOneWidget);
+    expect(find.byKey(const ValueKey('import-enrollment')), findsOneWidget);
+    expect(find.byKey(const ValueKey('scan-enrollment')), findsNothing);
 
     await tester.tap(find.text('Settings'));
     await tester.pump();
-    expect(
-      find.text('This local client does not require an account.'),
-      findsOneWidget,
+    expect(find.text('Traffic settings'), findsOneWidget);
+    expect(find.text('Traffic control'), findsOneWidget);
+    await tester.scrollUntilVisible(
+      find.text('Local traffic adapters'),
+      300,
+      scrollable: find.byType(Scrollable).first,
     );
-    expect(find.text('Adapter options'), findsOneWidget);
+    await tester.pump();
+    expect(find.text('Local traffic adapters'), findsOneWidget);
+    expect(find.text('System proxy'), findsOneWidget);
     await tester.scrollUntilVisible(
       find.byKey(const ValueKey('routing-rules')),
       300,
       scrollable: find.byType(Scrollable).first,
     );
     await tester.pump();
-    expect(find.text('Desktop proxy rules'), findsOneWidget);
+    expect(find.text('Routing mode'), findsOneWidget);
     expect(find.byKey(const ValueKey('routing-rules')), findsOneWidget);
   });
 
@@ -119,7 +126,7 @@ void main() {
     await tester.pumpWidget(const VelumClientApp());
 
     expect(find.byType(ClientCompactNavigation), findsOneWidget);
-    expect(tester.getSize(find.byType(ClientCompactNavigation)).height, 68);
+    expect(tester.getSize(find.byType(ClientCompactNavigation)).height, 78);
     expect(find.byKey(const ValueKey('connection-action')), findsOneWidget);
     expect(find.text('Overview'), findsAtLeastNWidgets(1));
     expect(find.text('Nodes'), findsOneWidget);
@@ -127,17 +134,16 @@ void main() {
     expect(find.text('Settings'), findsOneWidget);
   });
 
-  testWidgets('routes the primary action to configuration when incomplete', (
-    tester,
-  ) async {
-    await tester.pumpWidget(const VelumClientApp());
+  testWidgets(
+    'shows the primary start action when configuration is incomplete',
+    (tester) async {
+      await tester.pumpWidget(const VelumClientApp());
 
-    expect(find.text('CONFIGURE'), findsOneWidget);
-    await tester.tap(find.byKey(const ValueKey('connection-action')));
-    await tester.pump();
-
-    expect(find.text('Connection configuration'), findsOneWidget);
-  });
+      expect(find.text('CONFIGURE'), findsNothing);
+      expect(find.text('START'), findsOneWidget);
+      expect(find.byKey(const ValueKey('connection-action')), findsOneWidget);
+    },
+  );
 
   testWidgets(
     'can stop while connecting without accepting a stale online state',
@@ -150,13 +156,13 @@ void main() {
       controller.start(testRuntimeConfiguration());
 
       await tester.pumpWidget(VelumClientApp(controller: controller));
-      expect(find.text('CONNECTING'), findsAtLeastNWidgets(1));
+      expect(find.byTooltip('Connecting'), findsOneWidget);
       expect(find.text('STOP'), findsOneWidget);
 
       await tester.tap(find.text('STOP'));
       await tester.pump();
       expect(runtime.stopCount, 1);
-      expect(find.text('OFFLINE'), findsOneWidget);
+      expect(find.byTooltip('Offline'), findsOneWidget);
 
       runtime.current = const ClientRuntimeSnapshot(
         revision: 3,
@@ -167,7 +173,7 @@ void main() {
       expect(controller.refresh(), isFalse);
       await tester.pump();
       expect(find.text('Runtime online'), findsNothing);
-      expect(find.text('OFFLINE'), findsOneWidget);
+      expect(find.byTooltip('Offline'), findsOneWidget);
 
       await tester.pumpWidget(const SizedBox.shrink());
       expect(runtime.destroyCount, 1);
@@ -194,9 +200,7 @@ void main() {
       ),
     );
 
-    expect(find.text('Traffic'), findsOneWidget);
-    expect(find.text('Download'), findsOneWidget);
-    expect(find.text('Upload'), findsOneWidget);
+    expect(find.text('Network speed'), findsOneWidget);
     expect(find.byType(TrafficChart), findsOneWidget);
     expect(find.text('Waiting for runtime metrics'), findsNothing);
     expect(find.byIcon(Icons.power_settings_new_rounded), findsNothing);
