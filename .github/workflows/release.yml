@@ -327,7 +327,12 @@ jobs:
             )
           fi
           for artifact in "${artifacts[@]}"; do
-            shasum -a 256 "$artifact" > "$artifact.sha256"
+            if [[ "${{ matrix.client }}" = windows ]]; then
+              hash="$(certutil -hashfile "$artifact" SHA256 | sed -n '2p' | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
+              printf '%s  %s\n' "$hash" "$artifact" > "$artifact.sha256"
+            else
+              shasum -a 256 "$artifact" > "$artifact.sha256"
+            fi
           done
       - name: Package node artifact
         if: matrix.build_node
