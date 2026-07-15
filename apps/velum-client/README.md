@@ -56,3 +56,16 @@ ABI under `flutter/android/app/src/main/jniLibs/`; use
 `scripts/build-android-client.sh` for the arm64 development build. Android
 release support still requires retained device evidence for permission denial,
 TCP, UDP, DNS, relay loss, process death, suspend/resume, and network changes.
+## Android release signing
+
+Release APK builds require a dedicated Android upload key. Store its Base64-encoded
+contents and credentials in these GitHub Actions secrets:
+
+- `ANDROID_KEYSTORE_BASE64`
+- `ANDROID_KEYSTORE_PASSWORD`
+- `ANDROID_KEY_ALIAS`
+- `ANDROID_KEY_PASSWORD`
+
+The release workflow decodes the keystore only in the runner's temporary directory.
+For local release builds, set the same password and alias variables plus
+`ANDROID_KEYSTORE_PATH` to the local keystore path.

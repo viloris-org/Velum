@@ -177,7 +177,18 @@ jobs:
       - name: Build Android client
         if: matrix.client == 'android'
         working-directory: apps/velum-client/flutter
-        run: flutter build apk --release --target-platform ${{ matrix.flutter_target }}
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        shell: bash
+        run: |
+          test -n "$ANDROID_KEYSTORE_BASE64"
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/velum-upload.jks"
+          chmod 600 "$RUNNER_TEMP/velum-upload.jks"
+          export ANDROID_KEYSTORE_PATH="$RUNNER_TEMP/velum-upload.jks"
+          flutter build apk --release --target-platform ${{ matrix.flutter_target }}
       - name: Prepare client payload
         shell: bash
         run: |

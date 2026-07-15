@@ -1,2 +1,5 @@
 /target/
+*.jks
+*.keystore
+**/key.properties
 apps/velum-client/flutter/android/app/src/main/jniLibs/*/*.so
