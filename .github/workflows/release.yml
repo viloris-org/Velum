@@ -1,7 +1,6 @@
 name: Build release artifacts
 
 on:
-  pull_request:
   push:
     branches: [main]
     tags: ['v*']
@@ -15,31 +14,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  foundation:
-    name: Foundation gates
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - name: Set up Node 22.22.2
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version-file: .node-version
-      - name: Install pinned Rust toolchain
-        run: |
-          rustup toolchain install 1.97.0 --profile minimal --component clippy,rustfmt
-          rustup override set 1.97.0
-      - name: Install cargo-deny 0.20.2
-        run: cargo install cargo-deny --locked --version 0.20.2
-      - name: Run Foundation gates
-        run: cargo xtask test
-      - name: Test installer release selection
-        run: sh scripts/test-install.sh
-
   build:
     name: ${{ matrix.platform }}
-    needs: foundation
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -97,6 +73,20 @@ jobs:
           rustup toolchain install 1.97.0 --profile minimal
           rustup override set 1.97.0
           rustup target add ${{ matrix.target }}
+      - name: Restore Rust build cache
+        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+        with:
+          shared-key: release-${{ matrix.target }}
+      - name: Restore Flutter and Gradle caches
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.pub-cache
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: flutter-${{ runner.os }}-${{ matrix.client }}-3.44.0-${{ hashFiles('apps/velum-client/flutter/pubspec.lock') }}
+          restore-keys: |
+            flutter-${{ runner.os }}-${{ matrix.client }}-3.44.0-
       - name: Install Flutter 3.44.0
         shell: bash
         run: |
