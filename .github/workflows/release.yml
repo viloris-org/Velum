@@ -241,6 +241,7 @@ jobs:
           Architecture: $deb_arch
           Maintainer: Velum
           Description: Velum desktop client
+          Depends: default-jre-headless, libgtk-3-0 | libgtk-3-0t64, libsecret-1-0
           EOF
           dpkg-deb --build "$package_root" "velum-client-${{ github.ref_name }}-${{ matrix.platform }}.deb"
           rpm_arch="${{ matrix.appimage_arch }}"
@@ -255,6 +256,7 @@ jobs:
           Summary: Velum desktop client
           License: Apache-2.0
           BuildArch: $rpm_arch
+          Requires: java-headless
 
           %description
           Velum desktop client.
@@ -268,6 +270,8 @@ jobs:
           EOF
           rpmbuild -bb --define "_topdir $rpm_topdir" "$rpm_topdir/SPECS/velum-client.spec"
           cp "$rpm_topdir/RPMS/$rpm_arch/"*.rpm "velum-client-${{ github.ref_name }}-${{ matrix.platform }}.rpm"
+          dpkg-deb --field "velum-client-${{ github.ref_name }}-${{ matrix.platform }}.deb" Depends | grep -Fq default-jre-headless
+          rpm -qp --requires "velum-client-${{ github.ref_name }}-${{ matrix.platform }}.rpm" | grep -Fxq java-headless
           appdir="$RUNNER_TEMP/VelumClient.AppDir"
           install -d "$appdir/usr/bin" "$appdir/usr/lib"
           cp -a client-dist/velum-client "$appdir/usr/lib/velum-client"
