@@ -15,6 +15,8 @@ use crate::{
     terminal::{prompt_choice, prompt_default, prompt_required},
 };
 
+const DEFAULT_TERMINAL_COLUMNS: usize = 80;
+
 enum Delivery {
     Qr,
     File(PathBuf),
@@ -254,7 +256,11 @@ fn issue(options: IssueOptions) -> Result<(), String> {
         .to_canonical_json()
         .map_err(|error| format!("cannot encode enrollment: {error}"))?;
     let qr = match options.delivery {
-        Delivery::Qr => Some(render_qr(&canonical)?),
+        Delivery::Qr => {
+            let qr = render_qr(&canonical)?;
+            ensure_qr_fits_terminal(&qr, terminal_columns())?;
+            Some(qr)
+        }
         Delivery::File(_) => None,
     };
 
@@ -345,6 +351,31 @@ fn render_qr(payload: &str) -> Result<String, String> {
                 .build()
         })
         .map_err(|_| "enrollment is too large for a QR code; use --output instead".into())
+}
+
+fn terminal_columns() -> usize {
+    parse_terminal_columns(std::env::var("COLUMNS").ok().as_deref())
+}
+
+fn parse_terminal_columns(value: Option<&str>) -> usize {
+    value
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|columns| *columns > 0)
+        .unwrap_or(DEFAULT_TERMINAL_COLUMNS)
+}
+
+fn ensure_qr_fits_terminal(qr: &str, columns: usize) -> Result<(), String> {
+    let width = qr
+        .lines()
+        .map(|line| line.chars().count())
+        .max()
+        .unwrap_or(0);
+    if width > columns {
+        return Err(format!(
+            "enrollment QR code is {width} columns wide but this terminal is {columns} columns; use --output PATH instead"
+        ));
+    }
+    Ok(())
 }
 
 fn write_private_new(path: &Path, contents: &[u8]) -> Result<(), String> {
@@ -481,7 +512,26 @@ mod tests {
 
     #[test]
     fn qr_renderer_accepts_a_normal_enrollment_payload() {
-        assert!(render_qr("{\"kind\":\"velum-enrollment\"}").is_ok());
+        let qr = render_qr("{\"kind\":\"velum-enrollment\"}").expect("QR");
+        assert!(ensure_qr_fits_terminal(&qr, 80).is_ok());
+    }
+
+    #[test]
+    fn qr_delivery_rejects_output_that_would_wrap_in_a_terminal() {
+        let qr = render_qr(&"certificate".repeat(60)).expect("QR");
+        assert!(ensure_qr_fits_terminal(&qr, 80).is_err());
+        assert!(ensure_qr_fits_terminal(&qr, 400).is_ok());
+    }
+
+    #[test]
+    fn terminal_columns_uses_a_safe_default_for_invalid_values() {
+        assert_eq!(parse_terminal_columns(None), DEFAULT_TERMINAL_COLUMNS);
+        assert_eq!(
+            parse_terminal_columns(Some("not-a-number")),
+            DEFAULT_TERMINAL_COLUMNS
+        );
+        assert_eq!(parse_terminal_columns(Some("0")), DEFAULT_TERMINAL_COLUMNS);
+        assert_eq!(parse_terminal_columns(Some("160")), 160);
     }
 
     #[test]
