@@ -67,6 +67,15 @@ class ClientController extends ChangeNotifier {
     }
   }
 
+  int runtimeHandleForTun() {
+    _ensureActive();
+    final runtime = _runtime;
+    if (runtime is! ClientTunBridge) {
+      throw const ClientControlException(ClientControlStatus.configuration);
+    }
+    return (runtime as ClientTunBridge).runtimeHandle;
+  }
+
   /// Polls the latest-value snapshot and rejects stale revisions or generations.
   bool refresh() {
     _ensureActive();

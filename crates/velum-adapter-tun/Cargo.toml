@@ -7,10 +7,14 @@ rust-version.workspace = true
 
 [dependencies]
 smoltcp = { version = "=0.12.0", default-features = false, features = ["alloc", "medium-ip", "proto-ipv4", "socket-tcp", "socket-udp"] }
+tokio = { version = "=1.52.3", features = ["fs", "io-util", "macros", "rt", "rt-multi-thread", "sync", "time"] }
 velum-client-runtime = { version = "0.0.0", path = "../velum-client-runtime" }
 
-[dev-dependencies]
-tokio = { version = "=1.48.0", features = ["macros", "rt"] }
+[target.'cfg(target_os = "android")'.dependencies]
+ipstack = "=1.0.1"
 
-[lints]
-workspace = true
+[lints.rust]
+unsafe_code = "allow"
+
+[lints.clippy]
+all = "warn"

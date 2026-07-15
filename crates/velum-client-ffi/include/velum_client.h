@@ -117,6 +117,11 @@ VelumControlStatus velum_client_runtime_proxy_start(
 VelumControlStatus velum_client_runtime_proxy_stop(uint64_t runtime_handle);
 VelumControlStatus velum_client_runtime_destroy(uint64_t runtime_handle);
 
+#if defined(__ANDROID__)
+int32_t velum_client_android_tun_run(uint64_t runtime_handle, int32_t tun_fd);
+int32_t velum_client_android_tun_stop(void);
+#endif
+
 #ifdef __cplusplus
 }
 #endif

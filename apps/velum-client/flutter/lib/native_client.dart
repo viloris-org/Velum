@@ -171,8 +171,13 @@ abstract interface class ClientProxyBridge {
   void stopLoopbackProxy();
 }
 
+abstract interface class ClientTunBridge {
+  int get runtimeHandle;
+}
+
 /// Hand-written binding for the versioned asynchronous runtime control ABI.
-class NativeClientRuntime implements ClientRuntimeBridge, ClientProxyBridge {
+class NativeClientRuntime
+    implements ClientRuntimeBridge, ClientProxyBridge, ClientTunBridge {
   NativeClientRuntime._({
     required _RuntimeStartV1Dart start,
     required _RuntimeSnapshotV1Dart snapshot,
@@ -197,6 +202,9 @@ class NativeClientRuntime implements ClientRuntimeBridge, ClientProxyBridge {
   final _RuntimeProxyStopDart _stopProxy;
   final _RuntimeDestroyDart _destroy;
   final int handle;
+
+  @override
+  int get runtimeHandle => handle;
   bool _destroyed = false;
 
   static String defaultLibraryName() {

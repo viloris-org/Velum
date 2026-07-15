@@ -7,7 +7,7 @@ rust-version.workspace = true
 
 [dependencies]
 rustls = { version = "=0.23.41", default-features = false, features = ["ring"] }
-tokio = { version = "=1.48.0", features = ["io-util", "macros", "net", "rt", "sync", "time"] }
+tokio = { version = "=1.52.3", features = ["io-util", "macros", "net", "rt", "sync", "time"] }
 tokio-rustls = { version = "=0.26.4", default-features = false, features = ["ring"] }
 velum-carrier-api = { version = "0.0.0", path = "../velum-carrier-api" }
 

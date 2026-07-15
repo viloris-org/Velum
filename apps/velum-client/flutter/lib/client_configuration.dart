@@ -216,7 +216,7 @@ class _NodeEditor extends StatelessWidget {
           'Certificate name presented by the relay',
         ),
         DropdownButtonFormField<ClientTrustMode>(
-          value: node.trustMode,
+          initialValue: node.trustMode,
           onChanged: editable
               ? (mode) {
                   if (mode != null) onTrustModeChanged(mode);

@@ -1,6 +1,6 @@
 # ADR-0015: Desktop Loopback Proxy And System Configuration
 
-- **Status:** Proposed
+- **Status:** Superseded by ADR-0016
 - **Date:** 2026-07-15
 - **Owner:** Client maintainers
 - **Related:** ADR-0012, ADR-0013, ADR-0014

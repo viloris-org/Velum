@@ -1,9 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Produces the arm64 runtime library consumed by Flutter and the Android host.
-# TUN is deliberately not enabled by this script; it only packages the shared
-# client ABI required by the later JNI packet-engine integration.
+# Produces the runtime and TUN engine for every Flutter Android ABI.
 
 root=$(cd "$(dirname "$0")/.." && pwd)
 ndk=${ANDROID_NDK_HOME:-}
@@ -15,8 +13,25 @@ if [[ -z "$ndk" || ! -d "$ndk" ]]; then
   exit 1
 fi
 
-export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android${ANDROID_API_LEVEL:-24}-clang"
+toolchain="$ndk/toolchains/llvm/prebuilt/linux-x86_64/bin"
+api=${ANDROID_API_LEVEL:-24}
+export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$toolchain/aarch64-linux-android${api}-clang"
+export CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_LINKER="$toolchain/armv7a-linux-androideabi${api}-clang"
+export CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER="$toolchain/x86_64-linux-android${api}-clang"
+export CC_aarch64_linux_android="$CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER"
+export CC_armv7_linux_androideabi="$CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_LINKER"
+export CC_x86_64_linux_android="$CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER"
+export AR_aarch64_linux_android="$toolchain/llvm-ar"
+export AR_armv7_linux_androideabi="$toolchain/llvm-ar"
+export AR_x86_64_linux_android="$toolchain/llvm-ar"
 cd "$root"
-cargo build --release --target aarch64-linux-android -p velum-client-ffi
-install -Dm755 target/aarch64-linux-android/release/libvelum_client_ffi.so \
-  apps/velum-client/flutter/android/app/src/main/jniLibs/arm64-v8a/libvelum_client_ffi.so
+for target_and_abi in \
+  "aarch64-linux-android arm64-v8a" \
+  "armv7-linux-androideabi armeabi-v7a" \
+  "x86_64-linux-android x86_64"
+do
+  read -r target abi <<<"$target_and_abi"
+  cargo build --release --target "$target" -p velum-client-ffi
+  install -Dm755 "target/$target/release/libvelum_client_ffi.so" \
+    "apps/velum-client/flutter/android/app/src/main/jniLibs/$abi/libvelum_client_ffi.so"
+done

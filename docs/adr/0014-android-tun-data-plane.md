@@ -1,6 +1,6 @@
 # ADR-0014: Android TUN Data Plane
 
-- **Status:** Proposed
+- **Status:** Superseded by ADR-0016
 - **Date:** 2026-07-15
 - **Owner:** Client maintainers
 - **Stakeholders:** Android, transport, protocol, server, security, and release maintainers

@@ -1,8 +1,9 @@
 //! Loopback-only HTTP CONNECT and SOCKS5 adapter for an online Velum runtime.
 //!
-//! This adapter intentionally accepts only literal IP destinations. The Stage 2
-//! relay contract authorizes `SocketAddr` values, so resolving domains locally
-//! would create an unprotected DNS side channel.
+//! Domain targets are resolved before the proxy acknowledges a CONNECT request.
+//! The resulting address remains subject to the relay's exact destination policy.
+
+mod target;
 
 use std::{
     io,
@@ -11,12 +12,14 @@ use std::{
 };
 
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
+    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::{TcpListener, TcpStream},
     sync::watch,
     task::JoinHandle,
 };
 use velum_client_runtime::{ClientRuntime, RuntimeReceiveStream, RuntimeSendStream};
+
+use crate::target::ProxyTarget;
 
 const MAX_HANDSHAKE_BYTES: usize = 16 * 1024;
 const COPY_BUFFER_BYTES: usize = 16 * 1024;
@@ -83,6 +86,7 @@ impl Drop for ProxyAdapter {
 
 async fn serve(mut local: TcpStream, runtime: Arc<ClientRuntime>) -> io::Result<()> {
     let (target, protocol) = read_target(&mut local).await?;
+    let target = target.resolve().await?;
     let stream = runtime.open_stream(target).await.map_err(runtime_error)?;
     let (generation, send, receive) = stream.into_parts();
     if !runtime.is_generation_online(generation) {
@@ -133,7 +137,10 @@ enum ConnectProtocol {
     Socks5,
 }
 
-async fn read_target(local: &mut TcpStream) -> io::Result<(SocketAddr, ConnectProtocol)> {
+async fn read_target<T>(local: &mut T) -> io::Result<(ProxyTarget, ConnectProtocol)>
+where
+    T: AsyncRead + AsyncWrite + Unpin,
+{
     let mut first = [0_u8; 1];
     local.read_exact(&mut first).await?;
     if first[0] == 5 {
@@ -146,7 +153,10 @@ async fn read_target(local: &mut TcpStream) -> io::Result<(SocketAddr, ConnectPr
         .map(|target| (target, ConnectProtocol::Http))
 }
 
-async fn read_socks5_target(local: &mut TcpStream) -> io::Result<SocketAddr> {
+async fn read_socks5_target<T>(local: &mut T) -> io::Result<ProxyTarget>
+where
+    T: AsyncRead + AsyncWrite + Unpin,
+{
     let mut count = [0_u8; 1];
     local.read_exact(&mut count).await?;
     let mut methods = vec![0_u8; usize::from(count[0])];
@@ -170,18 +180,27 @@ async fn read_socks5_target(local: &mut TcpStream) -> io::Result<SocketAddr> {
         1 => {
             let mut value = [0_u8; 4];
             local.read_exact(&mut value).await?;
-            IpAddr::V4(value.into())
+            ProxyTarget::Address(SocketAddr::new(IpAddr::V4(value.into()), 0))
         }
         4 => {
             let mut value = [0_u8; 16];
             local.read_exact(&mut value).await?;
-            IpAddr::V6(value.into())
+            ProxyTarget::Address(SocketAddr::new(IpAddr::V6(value.into()), 0))
         }
         3 => {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "domain destinations are not supported",
-            ));
+            let mut length = [0_u8; 1];
+            local.read_exact(&mut length).await?;
+            let mut host = vec![0_u8; usize::from(length[0])];
+            local.read_exact(&mut host).await?;
+            ProxyTarget::Domain {
+                host: String::from_utf8(host).map_err(|_| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "proxy target hostname is not UTF-8",
+                    )
+                })?,
+                port: 0,
+            }
         }
         _ => {
             return Err(io::Error::new(
@@ -192,11 +211,19 @@ async fn read_socks5_target(local: &mut TcpStream) -> io::Result<SocketAddr> {
     };
     let mut port = [0_u8; 2];
     local.read_exact(&mut port).await?;
-    let target = SocketAddr::new(address, u16::from_be_bytes(port));
-    Ok(target)
+    let port = u16::from_be_bytes(port);
+    match address {
+        ProxyTarget::Address(address) => {
+            Ok(ProxyTarget::Address(SocketAddr::new(address.ip(), port)))
+        }
+        ProxyTarget::Domain { host, .. } => ProxyTarget::from_host_port(host.as_bytes(), port),
+    }
 }
 
-async fn read_http_connect_target(local: &mut TcpStream, first: u8) -> io::Result<SocketAddr> {
+async fn read_http_connect_target<T>(local: &mut T, first: u8) -> io::Result<ProxyTarget>
+where
+    T: AsyncRead + Unpin,
+{
     let mut request = vec![first];
     while !request.ends_with(b"\r\n\r\n") {
         if request.len() == MAX_HANDSHAKE_BYTES {
@@ -218,12 +245,7 @@ async fn read_http_connect_target(local: &mut TcpStream, first: u8) -> io::Resul
     let authority = parts
         .next()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "missing HTTP authority"))?;
-    let target = authority.parse::<SocketAddr>().map_err(|_| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "HTTP proxy requires a literal IP host and port",
-        )
-    })?;
+    let target = ProxyTarget::from_authority(authority)?;
     if !method.eq_ignore_ascii_case("CONNECT") {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -265,5 +287,38 @@ mod tests {
                 .port(),
             443
         );
+    }
+
+    #[tokio::test]
+    async fn socks_domain_request_preserves_hostname_until_port_is_read() {
+        let (mut client_stream, mut server) = tokio::io::duplex(128);
+        let client = tokio::spawn(async move {
+            client_stream.write_all(&[5, 1, 0]).await.expect("greeting");
+            let mut response = [0_u8; 2];
+            client_stream
+                .read_exact(&mut response)
+                .await
+                .expect("greeting response");
+            assert_eq!(response, [5, 0]);
+            client_stream
+                .write_all(&[5, 1, 0, 3, 11])
+                .await
+                .expect("request prefix");
+            client_stream.write_all(b"example.com").await.expect("host");
+            client_stream
+                .write_all(&443_u16.to_be_bytes())
+                .await
+                .expect("port");
+        });
+        let (target, protocol) = read_target(&mut server).await.expect("target");
+        assert!(matches!(protocol, ConnectProtocol::Socks5));
+        assert_eq!(
+            target,
+            ProxyTarget::Domain {
+                host: "example.com".into(),
+                port: 443,
+            }
+        );
+        client.await.expect("client task");
     }
 }

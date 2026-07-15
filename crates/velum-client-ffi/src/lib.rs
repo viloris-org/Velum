@@ -10,6 +10,8 @@ mod configuration;
 mod control;
 mod handles;
 mod streams;
+#[cfg(target_os = "android")]
+mod tun;
 
 use std::sync::OnceLock;
 

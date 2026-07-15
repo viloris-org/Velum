@@ -1,2 +1,2 @@
 /target/
-
+apps/velum-client/flutter/android/app/src/main/jniLibs/*/*.so

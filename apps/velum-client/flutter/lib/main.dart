@@ -5,6 +5,7 @@ import 'dart:ui';
 
 import 'package:flutter/material.dart';
 
+import 'android_vpn.dart';
 import 'client_configuration.dart';
 import 'client_compact_navigation.dart';
 import 'client_controller.dart';
@@ -61,8 +62,13 @@ class _ClientHomeState extends State<ClientHome> {
   var _activeNodeIndex = 0;
   var _insecureTrustAcknowledged = false;
   var _sidebarExpanded = true;
-  final _systemProxy = SystemProxy();
+  final SystemProxy? _systemProxy =
+      Platform.isLinux || Platform.isMacOS || Platform.isWindows
+      ? SystemProxy()
+      : null;
+  final _androidVpn = AndroidVpn();
   var _systemProxyEnabled = false;
+  var _tunEnabled = false;
 
   RelayNodeDraft get _activeNode => _nodes[_activeNodeIndex];
 
@@ -73,13 +79,15 @@ class _ClientHomeState extends State<ClientHome> {
     _lastSnapshot = _clientController.snapshot;
     _lastPollingError = _clientController.pollingError;
     _clientController.addListener(_handleControllerChanged);
+    if (_systemProxy != null) unawaited(_systemProxy.disable());
   }
 
   @override
   void dispose() {
     if (_systemProxyEnabled) {
-      unawaited(_systemProxy.disable());
+      unawaited(_systemProxy!.disable());
     }
+    if (_tunEnabled) unawaited(_androidVpn.stop());
     _clientController.removeListener(_handleControllerChanged);
     _clientController.dispose();
     _library.dispose();
@@ -95,6 +103,7 @@ class _ClientHomeState extends State<ClientHome> {
     if (phase == ClientRuntimePhase.online ||
         phase == ClientRuntimePhase.connecting) {
       if (_systemProxyEnabled) await _disableSystemProxy();
+      if (_tunEnabled) await _disableTun();
       try {
         _clientController.stop();
       } on ClientControlException catch (error) {
@@ -212,6 +221,7 @@ class _ClientHomeState extends State<ClientHome> {
     if (_systemProxyEnabled && next.phase != ClientRuntimePhase.online) {
       _disableSystemProxy();
     }
+    if (_tunEnabled && next.phase != ClientRuntimePhase.online) _disableTun();
   }
 
   Future<void> _toggleSystemProxy(bool enabled) async {
@@ -222,12 +232,12 @@ class _ClientHomeState extends State<ClientHome> {
       }
       try {
         final port = _clientController.startLoopbackProxy();
-        await _systemProxy.enable(port);
+        await _systemProxy!.enable(port);
         if (!mounted) return;
         setState(() => _systemProxyEnabled = true);
       } on Object {
         try {
-          await _systemProxy.disable();
+          await _systemProxy!.disable();
         } on Object {
           // Keep the original failure as the user-visible outcome.
         }
@@ -245,7 +255,7 @@ class _ClientHomeState extends State<ClientHome> {
 
   Future<void> _disableSystemProxy() async {
     try {
-      await _systemProxy.disable();
+      await _systemProxy!.disable();
     } on Object {
       _reportError('The system proxy could not be disabled.');
       return;
@@ -257,6 +267,37 @@ class _ClientHomeState extends State<ClientHome> {
       // release its listener during stop and destroy.
     }
     if (mounted) setState(() => _systemProxyEnabled = false);
+  }
+
+  Future<void> _toggleTun(bool enabled) async {
+    if (!enabled) {
+      await _disableTun();
+      return;
+    }
+    if (_clientController.snapshot.phase != ClientRuntimePhase.online) {
+      _reportError('Connect to the relay before enabling TUN.');
+      return;
+    }
+    try {
+      if (!await _androidVpn.requestPermission()) return;
+      await _androidVpn.start(
+        runtimeHandle: _clientController.runtimeHandleForTun(),
+        libraryPath: _library.text.trim(),
+      );
+      if (mounted) setState(() => _tunEnabled = true);
+    } on Object {
+      _reportError('The Android VPN could not be started.');
+    }
+  }
+
+  Future<void> _disableTun() async {
+    try {
+      await _androidVpn.stop();
+    } on Object {
+      _reportError('The Android VPN could not be stopped.');
+      return;
+    }
+    if (mounted) setState(() => _tunEnabled = false);
   }
 
   void _reportError(String message) {
@@ -310,9 +351,12 @@ class _ClientHomeState extends State<ClientHome> {
       ),
       _ => _SettingsPanel(
         systemProxyEnabled: _systemProxyEnabled,
+        tunEnabled: _tunEnabled,
+        isAndroid: Platform.isAndroid,
         available: Platform.isLinux || Platform.isMacOS || Platform.isWindows,
         runtimeOnline: snapshot.phase == ClientRuntimePhase.online,
         onSystemProxyChanged: _toggleSystemProxy,
+        onTunChanged: _toggleTun,
       ),
     };
     return Scaffold(
@@ -907,15 +951,21 @@ class _ConnectionAction extends StatelessWidget {
 class _SettingsPanel extends StatelessWidget {
   const _SettingsPanel({
     required this.systemProxyEnabled,
+    required this.tunEnabled,
+    required this.isAndroid,
     required this.available,
     required this.runtimeOnline,
     required this.onSystemProxyChanged,
+    required this.onTunChanged,
   });
 
   final bool systemProxyEnabled;
+  final bool tunEnabled;
+  final bool isAndroid;
   final bool available;
   final bool runtimeOnline;
   final ValueChanged<bool> onSystemProxyChanged;
+  final ValueChanged<bool> onTunChanged;
 
   @override
   Widget build(BuildContext context) => ListView(
@@ -932,16 +982,22 @@ class _SettingsPanel extends StatelessWidget {
       ClientPanel(
         child: SwitchListTile(
           contentPadding: EdgeInsets.zero,
-          title: const Text('System proxy'),
+          title: Text(isAndroid ? 'TUN VPN' : 'System proxy'),
           subtitle: Text(
-            !available
-                ? 'System proxy is unavailable on this platform.'
+            !available && !isAndroid
+                ? 'Traffic capture is unavailable on this platform.'
                 : !runtimeOnline
-                ? 'Connect to the relay before enabling the system proxy.'
-                : 'Enable IP-literal CONNECT and SOCKS traffic through the active relay.',
+                ? 'Connect to the relay before enabling traffic capture.'
+                : isAndroid
+                ? 'Route device TCP, UDP, and DNS traffic through the active relay.'
+                : 'Route HTTPS CONNECT and SOCKS traffic through the active relay.',
           ),
-          value: systemProxyEnabled,
-          onChanged: available && runtimeOnline ? onSystemProxyChanged : null,
+          value: isAndroid ? tunEnabled : systemProxyEnabled,
+          onChanged: (available || isAndroid) && runtimeOnline
+              ? isAndroid
+                    ? onTunChanged
+                    : onSystemProxyChanged
+              : null,
         ),
       ),
       const SizedBox(height: 16),

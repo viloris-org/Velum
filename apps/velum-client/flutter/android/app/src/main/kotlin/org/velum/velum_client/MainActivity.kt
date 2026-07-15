@@ -13,21 +13,33 @@ class MainActivity : FlutterActivity() {
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, VPN_CHANNEL).setMethodCallHandler { call, result ->
-            if (call.method != "requestPermission") {
-                result.notImplemented()
-                return@setMethodCallHandler
+            when (call.method) {
+                "requestPermission" -> requestPermission(result)
+                "start" -> {
+                    if (VpnService.prepare(this) != null) {
+                        result.error("permission", "VPN permission has not been granted.", null)
+                    } else {
+                        VelumVpnService.start(this, result)
+                    }
+                }
+                "stop" -> {
+                    VelumVpnService.stop(this)
+                    result.success(true)
+                }
+                else -> result.notImplemented()
             }
-            if (permissionResult != null) {
-                result.error("busy", "A VPN permission request is already active.", null)
-                return@setMethodCallHandler
-            }
-            val consent = VpnService.prepare(this)
-            if (consent == null) {
-                result.success(true)
-            } else {
-                permissionResult = result
-                startActivityForResult(consent, VPN_PERMISSION_REQUEST)
-            }
+        }
+    }
+
+    private fun requestPermission(result: MethodChannel.Result) {
+        if (permissionResult != null) {
+            result.error("busy", "A VPN permission request is already active.", null)
+            return
+        }
+        val consent = VpnService.prepare(this)
+        if (consent == null) result.success(true) else {
+            permissionResult = result
+            startActivityForResult(consent, VPN_PERMISSION_REQUEST)
         }
     }
 

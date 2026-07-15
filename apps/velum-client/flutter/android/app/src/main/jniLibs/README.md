@@ -9,13 +9,13 @@ jniLibs/armeabi-v7a/libvelum_client_ffi.so
 jniLibs/x86_64/libvelum_client_ffi.so
 ```
 
-Build arm64 locally with:
+Build all supported Android ABIs locally with:
 
 ```text
 scripts/build-android-client.sh
 ```
 
-The Flutter Android host loads this library through the existing runtime ABI v1.
-The runner still provides control only: a bounded UDP engine exists in Rust, but
-it has no JNI fd pump and no TCP/DNS engine, so it does not establish a TUN
-device until ADR-0014 is complete and device-tested.
+The Flutter Android host loads this library through the runtime control ABI. The
+same artifact contains the pinned userspace TCP/UDP engine described by ADR-0016;
+the VPN service passes its raw descriptor to that engine without moving packet
+content through Flutter platform channels.

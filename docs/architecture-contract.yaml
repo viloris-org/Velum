@@ -150,7 +150,9 @@ modules:
     paths: ["crates/velum-adapter-*/**"]
     owner: client-maintainers
     may_depend_on: [client-runtime, session, telemetry]
-    public_api: []
+    public_api:
+      - "crates/velum-adapter-proxy/src/lib.rs"
+      - "crates/velum-adapter-tun/src/lib.rs"
     owns: [local-application-integration]
     risk: standard
     unsafe_allowed: reviewed-exception

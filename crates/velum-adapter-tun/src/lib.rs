@@ -4,6 +4,12 @@
 //! code. A platform host supplies packets and owns the TUN descriptor; this
 //! crate rejects stale flows before they can reach `velum-client-runtime`.
 
+#[cfg(target_os = "android")]
+mod android;
+
+#[cfg(target_os = "android")]
+pub use android::run_android_tun;
+
 use std::{
     collections::{BTreeMap, VecDeque},
     net::SocketAddr,
