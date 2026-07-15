@@ -1,4 +1,8 @@
+import 'dart:io';
+import 'dart:ui';
+
 import 'package:flutter/material.dart';
+import 'package:liquid_glass_bridge/liquid_glass_bridge.dart';
 
 abstract final class ClientTheme {
   static const background = Color(0xff07090d);
@@ -55,13 +59,68 @@ class ClientPanel extends StatelessWidget {
   final EdgeInsetsGeometry? padding;
 
   @override
-  Widget build(BuildContext context) => DecoratedBox(
-    decoration: BoxDecoration(
-      color: ClientTheme.panel,
-      border: Border.all(color: ClientTheme.border),
+  Widget build(BuildContext context) {
+    final content = Padding(
+      padding: padding ?? const EdgeInsets.all(24),
+      child: child,
+    );
+    if (Platform.isAndroid) {
+      return LiquidGlassSurface(
+        mode: LiquidGlassMode.androidNative,
+        quality: LiquidGlassQuality.medium,
+        borderRadius: BorderRadius.circular(12),
+        elevation: 1,
+        tintColor: ClientTheme.panel,
+        tintOpacity: .30,
+        blurSigma: 14,
+        borderColor: ClientTheme.borderStrong.withValues(alpha: .78),
+        highlightStrength: .18,
+        noiseOpacity: .008,
+        child: content,
+      );
+    }
+    return ClipRRect(
       borderRadius: BorderRadius.circular(12),
+      child: BackdropFilter(
+        filter: ImageFilter.blur(sigmaX: 14, sigmaY: 14),
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            color: ClientTheme.panel.withValues(alpha: .68),
+            border: Border.all(
+              color: ClientTheme.borderStrong.withValues(alpha: .72),
+            ),
+            borderRadius: BorderRadius.circular(12),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: .18),
+                blurRadius: 24,
+                offset: const Offset(0, 10),
+              ),
+            ],
+          ),
+          child: content,
+        ),
+      ),
+    );
+  }
+}
+
+class ClientBackdrop extends StatelessWidget {
+  const ClientBackdrop({required this.child, super.key});
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) => DecoratedBox(
+    decoration: const BoxDecoration(
+      gradient: LinearGradient(
+        begin: Alignment.topLeft,
+        end: Alignment.bottomRight,
+        stops: [0, .46, 1],
+        colors: [Color(0xff0a2027), ClientTheme.background, Color(0xff0b1019)],
+      ),
     ),
-    child: Padding(padding: padding ?? const EdgeInsets.all(24), child: child),
+    child: child,
   );
 }
 

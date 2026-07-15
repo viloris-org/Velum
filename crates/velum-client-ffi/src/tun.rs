@@ -12,7 +12,20 @@ fn active_tun() -> &'static Mutex<Option<watch::Sender<bool>>> {
 /// Runs the Android TUN engine for one online runtime handle.
 #[unsafe(no_mangle)]
 pub extern "C" fn velum_client_android_tun_run(runtime_handle: u64, tun_fd: i32) -> i32 {
+    velum_client_android_tun_run_v2(runtime_handle, tun_fd, 1500)
+}
+
+/// Runs the Android TUN engine with the validated platform MTU.
+#[unsafe(no_mangle)]
+pub extern "C" fn velum_client_android_tun_run_v2(
+    runtime_handle: u64,
+    tun_fd: i32,
+    mtu: u16,
+) -> i32 {
     if tun_fd < 0 {
+        return -1;
+    }
+    if mtu < 576 {
         return -1;
     }
     let entry = match handles().lock() {
@@ -31,6 +44,7 @@ pub extern "C" fn velum_client_android_tun_run(runtime_handle: u64, tun_fd: i32)
     let result = executor().block_on(velum_adapter_tun::run_android_tun(
         entry.runtime.clone(),
         tun_fd,
+        mtu,
         stopped,
     ));
     if let Ok(mut active) = active_tun().lock() {
@@ -69,6 +83,7 @@ mod tests {
     #[test]
     fn rejects_invalid_descriptor_without_installing_engine() {
         assert_eq!(velum_client_android_tun_run(u64::MAX, -1), -1);
+        assert_eq!(velum_client_android_tun_run_v2(u64::MAX, 1, 500), -1);
         assert!(active_tun().lock().expect("state").is_none());
     }
 }

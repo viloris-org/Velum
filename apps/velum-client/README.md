@@ -3,11 +3,21 @@
 `flutter/` is the experimental desktop and Android control application. It loads
 the reviewed `velum-client-ffi` native library. Flutter uses runtime ABI v2 to
 create a handle, start without waiting for the network result, poll
-authoritative lifecycle snapshots, stop, and destroy. ABI v2 replaces the
+authoritative lifecycle snapshots, stop, and destroy. Profile ABI v3 validates
+and normalizes managed Velum YAML without changing runtime ABI v2. ABI v2 replaces the
 internal-test ABI v1; consumers must rebuild against its updated configuration
-layout. The desktop
-app can install a loopback system proxy for IP-literal HTTPS CONNECT and SOCKS
-traffic after the runtime is online. It does not install a TUN device.
+layout. On Windows, macOS, and supported Linux desktops, the app can install a
+restorable dual-loopback system proxy for ordinary HTTP, HTTP CONNECT, and
+SOCKS traffic. On Android, it can establish a dual-stack TUN VPN that forwards TCP, UDP, and DNS
+through the active runtime.
+
+The settings surface configures the proxy port and bypass list, Android TUN
+addresses, prefixes, MTU, DNS servers, and routes. The shared policy supports
+ordered `DOMAIN`, `DOMAIN-SUFFIX`, dual-stack `IP-CIDR`, `DST-PORT`, and `MATCH`
+rules with `DIRECT`, `PROXY`, `REJECT`, and explicit-node actions. Runtime ABI
+v2 proxy mode accepts the first three actions; explicit-node routing requires
+the feature-gated ABI v3 node engine. Android TUN rule parity remains gated on
+that same engine integration and retained device evidence.
 
 Build the core from the workspace:
 
@@ -16,12 +26,14 @@ cargo build -p velum-client-ffi --release
 ```
 
 In Flutter, set **Native client library** to the resulting platform library,
-then enter the relay address, TLS server name, CA PEM path, and credential-file
-path. Flutter copies those bytes only for the direct native call and does not
+then import a native-validated Velum profile or enter relay details manually.
+Imported profiles contain only `secret://velum/` references; credential and CA
+bytes resolve from platform secure storage. Legacy file fields migrate those
+bytes into secure storage. Flutter copies connection bytes only for the direct native call and does not
 print their contents; the Dart allocation is cleared after the native start
 call copies it. Native applications can open client streams or datagrams
 through the versioned direct API; the current Flutter UI controls lifecycle and
-renders snapshots. HTTP CONNECT is unsupported.
+renders snapshots. Ordinary HTTP, HTTP CONNECT, and SOCKS5 CONNECT are supported.
 
 This is not a production VPN or a stable protocol implementation, and an
 `Online` runtime does not imply that system traffic is routed. The runtime does
@@ -35,6 +47,6 @@ boundary and migration are documented in
 
 Android builds require `libvelum_client_ffi.so` to be packaged for each shipped
 ABI under `flutter/android/app/src/main/jniLibs/`; use
-`scripts/build-android-client.sh` for the arm64 development build. The Android
-runner declares a VPN service but does not establish a TUN device until its
-TCP/UDP/DNS packet engine is complete and device-tested.
+`scripts/build-android-client.sh` for the arm64 development build. Android
+release support still requires retained device evidence for permission denial,
+TCP, UDP, DNS, relay loss, process death, suspend/resume, and network changes.

@@ -2,8 +2,9 @@
 
 Status: Proposed. This document defines the target client ownership boundaries
 and a reversible migration from the experimental Flutter direct-client slice.
-It does not claim production VPN support. Android's first system traffic
-adapter is selected separately by [ADR-0014](adr/0014-android-tun-data-plane.md).
+It does not claim production VPN support. Restorable desktop system proxy and
+Android TUN ownership are defined by
+[ADR-0016](adr/0016-restorable-platform-traffic-adapters.md).
 
 ## Decision Summary
 
@@ -21,9 +22,12 @@ path:
 Flutter -> client-ffi -> client-runtime -> client-api -> QUIC relay
 ```
 
-This slice proves lifecycle ownership without yet introducing privileged
-services, TUN devices, automatic reconnection, or a stable external control
-protocol.
+The current slice also installs restorable desktop proxy settings and a
+configurable Android-owned IPv4 TUN service. Desktop proxy flows apply the
+strict first-match local routing policy defined by
+[ADR-0017](adr/0017-local-traffic-routing-policy.md). Android TUN rule parity
+remains deferred. The slice does not yet introduce automatic reconnection,
+desktop TUN helpers, or a stable external control protocol.
 
 Runtime control ABI v2 returns a stopped runtime handle before network work
 begins, accepts start and stop commands without waiting for a network timeout,
@@ -46,9 +50,10 @@ mode.
 
 ## Non-Goals
 
-- Claiming that the current client routes system traffic.
-- Selecting TUN, SOCKS, or another production application adapter before the
-  Stage 0 evidence gate resolves that decision.
+- Claiming production platform support before retained device and desktop
+  lifecycle evidence passes.
+- Adding desktop TUN behind Android's lifecycle contract; each desktop helper
+  needs its own privilege, installation, and rollback decision.
 - Defining every platform API or release entitlement in this proposal.
 - Moving session correctness, carrier selection, or server authorization into
   the UI or platform host.
@@ -58,13 +63,13 @@ mode.
 
 ### Verified Facts
 
-- Flutter now binds runtime ABI v2 lifecycle commands and latest-value
-  snapshots. It still cannot open a client stream or datagram and owns no
-  system traffic adapter.
+- Flutter binds runtime ABI v2 lifecycle commands and latest-value snapshots.
+  It selects platform traffic modes but neither packet payloads nor direct
+  stream/datagram handles cross the Flutter boundary.
 - `velum-client-api` deliberately provides direct streams and datagrams without
   a local proxy listener.
 - The Flutter project contains runners for Linux, macOS, Windows, and Android,
-  but no iOS runner or platform VPN service or extension.
+  plus an Android `VpnService`; it has no iOS runner or desktop VPN helper.
 - Flutter currently reads credential and certificate files before calling the
   native ABI.
 - `cargo xtask architecture`, the client crate tests, and the current Flutter
@@ -83,10 +88,9 @@ mode.
 
 ### Unknowns
 
-- The Android TUN adapter is selected by ADR-0014. `velum-adapter-tun` now
-  contains a bounded IPv4 UDP engine, generation-bound TCP relay streams, and
-  transparent TCP address translation. Its Android fd/JNI pump and required
-  TCP/IP/DNS packet-engine work remain unresolved.
+- ADR-0016 selects and wires the Android TUN adapter through `VpnService`, a
+  native fd pump, and a maintained userspace TCP/UDP stack. Retained Android
+  device evidence across lifecycle and network-change cases remains unresolved.
 - The first supported release platform and its signing, entitlement, service,
   installation, and background-execution requirements.
 - Required reconnect latency, startup latency, idle resource, and mobile wakeup
@@ -201,6 +205,7 @@ Its lifecycle entry points are:
 | `velum_client_runtime_start_v1` | Copy and validate configuration, publish `Connecting`, start native work, return its generation, and return without waiting for the network result. |
 | `velum_client_runtime_snapshot_v1` | Copy the latest immutable snapshot without waiting for a transition. |
 | `velum_client_runtime_stop` | Invalidate derived stream handles, supersede and abort in-flight connection work, close the active client, end `Stopped`, join the task before returning, and return the current generation. |
+| `velum_client_runtime_proxy_start_v2` | Copy and validate ordered routing rules, bind a loopback HTTP CONNECT/SOCKS listener, and return its selected port. |
 | `velum_client_runtime_destroy` | Atomically retire the runtime handle, perform stop cleanup, and reject all later calls with `InvalidHandle`. |
 
 `VelumRuntimeSnapshotV1` is a C-layout value containing `u64 revision`, `u64
@@ -334,11 +339,12 @@ reference environments and thresholds are recorded.
 
 ### Slice 3: One Real Traffic Adapter
 
-- Resolve the TUN/SOCKS/product adapter decision with Stage 0 evidence.
-- Implement one reference-platform path through a platform host, runtime, relay,
-  and retained TCP/UDP workload.
-- Validate route cleanup, failure containment, suspend/resume, and network
-  change behavior.
+- Implemented restorable system proxy paths for Windows, macOS, and supported
+  Linux desktops, plus an Android IPv4 TUN path for TCP, UDP, and DNS.
+- Added a platform-aware traffic mode controller so routing intent activates
+  only against an online runtime and OS integration is removed before stop.
+- Retain live relay workload, route cleanup, failure containment,
+  suspend/resume, and network-change evidence before claiming support.
 - Roll back by removing the adapter and leaving direct application flows intact.
 
 ### Slice 4: Platform Expansion
@@ -364,3 +370,32 @@ valuable than system traffic routing.
 - Secure-storage schema, rotation, import, and recovery behavior.
 - Reconnect, degraded-state, and carrier-transition thresholds.
 - Calibrated startup, transition, memory, idle-byte, and battery budgets.
+
+## Profile And Desktop TUN Evolution
+
+ADR-0018 and ADR-0019 add the next feature-gated client boundaries:
+
+- `velum-client-profile` strictly validates and normalizes Velum-owned YAML v1
+  without admitting inline credentials or CA material;
+- `velum-client-routing` owns the shared dual-stack matcher and action meaning
+  consumed by proxy and TUN adapters;
+- `velum-client-engine` composes independent single-node runtimes behind one
+  profile generation and isolates lazy node failures;
+- `velum-helper-protocol` and `velum-desktop-traffic-host` own bounded helper
+  messages, idempotency, mutation journaling, and mandatory crash recovery.
+
+The Flutter client imports profiles through native ABI v3 and persists only a
+canonical managed copy. Credential and CA references resolve through platform
+secure storage. ABI v2 runtime control remains available during migration.
+
+The shared TUN core now classifies IPv4 and IPv6 TCP/UDP, encodes dual-stack
+UDP responses, retains bounded fake-IP DNS identity by profile generation, and
+evaluates the shared policy after restoring the real destination. Android
+passes its configured MTU through ABI v2 rather than using a native constant.
+
+Desktop TUN remains disabled in ordinary builds. A build must explicitly set
+`VELUM_EXPERIMENTAL_DESKTOP_TUN` and provide the authenticated platform channel
+implemented by the signed Windows service, Linux polkit service, or macOS
+Packet Tunnel system extension. No platform is release-supported until the
+installation, upgrade, recovery, network-change, and uninstall evidence in
+ADR-0018 is retained for all three desktop targets.

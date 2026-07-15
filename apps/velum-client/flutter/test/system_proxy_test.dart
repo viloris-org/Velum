@@ -9,12 +9,19 @@ void main() {
     final store = _MemoryStore();
     final proxy = SystemProxy(backend: backend, store: store);
 
-    await proxy.enable(1080);
-    expect(backend.events, ['capture', 'enable:1080']);
+    await proxy.enable(1080, bypassHosts: const ['localhost', '.internal']);
+    expect(backend.events, ['capture', 'enable:1080', 'capture']);
+    expect(backend.bypassHosts, ['localhost', '.internal']);
     expect(store.snapshot, isNotNull);
 
     await proxy.disable();
-    expect(backend.events, ['capture', 'enable:1080', 'restore']);
+    expect(backend.events, [
+      'capture',
+      'enable:1080',
+      'capture',
+      'capture',
+      'restore',
+    ]);
     expect(store.snapshot, isNull);
   });
 
@@ -52,7 +59,26 @@ void main() {
 
     gate.complete();
     await Future.wait([enabling, disabling]);
-    expect(backend.events, ['capture', 'enable:1080', 'restore']);
+    expect(backend.events, [
+      'capture',
+      'enable:1080',
+      'capture',
+      'capture',
+      'restore',
+    ]);
+  });
+
+  test('external proxy changes are never overwritten during restore', () async {
+    final backend = _FakeBackend();
+    final store = _MemoryStore();
+    final proxy = SystemProxy(backend: backend, store: store);
+    await proxy.enable(1080);
+    backend.mode = 'user-change';
+
+    await expectLater(proxy.disable(), throwsStateError);
+
+    expect(backend.events.where((event) => event == 'restore'), isEmpty);
+    expect(store.snapshot, isNotNull);
   });
 }
 
@@ -61,6 +87,8 @@ final class _FakeBackend implements ProxyBackend {
   bool failEnable = false;
   bool failRestore = false;
   Future<void>? enableGate;
+  List<String>? bypassHosts;
+  String mode = 'original';
 
   @override
   String get id => 'fake';
@@ -68,20 +96,23 @@ final class _FakeBackend implements ProxyBackend {
   @override
   Future<ProxySnapshot> capture() async {
     events.add('capture');
-    return const ProxySnapshot(backend: 'fake', values: {'mode': 'original'});
+    return ProxySnapshot(backend: 'fake', values: {'mode': mode});
   }
 
   @override
-  Future<void> enable(int port) async {
+  Future<void> enable(int port, {required List<String> bypassHosts}) async {
     events.add('enable:$port');
+    this.bypassHosts = bypassHosts;
     await enableGate;
     if (failEnable) throw StateError('enable failed');
+    mode = 'velum:$port';
   }
 
   @override
   Future<void> restore(ProxySnapshot snapshot) async {
     events.add('restore');
     if (failRestore) throw StateError('restore failed');
+    mode = snapshot.values['mode'] as String;
   }
 }
 

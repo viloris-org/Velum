@@ -5,39 +5,54 @@ import 'native_client.dart';
 
 class RelayNodeDraft {
   RelayNodeDraft({
+    String id = '',
     String name = '',
     String relayAddress = '',
     String serverName = '',
     String certificatePath = '',
     String credentialPath = '',
+    String credentialRef = '',
+    String certificateRef = '',
     this.trustMode = ClientTrustMode.system,
-  }) : name = TextEditingController(text: name),
+  }) : id = TextEditingController(text: id),
+       name = TextEditingController(text: name),
        relayAddress = TextEditingController(text: relayAddress),
        serverName = TextEditingController(text: serverName),
        certificatePath = TextEditingController(text: certificatePath),
-       credentialPath = TextEditingController(text: credentialPath);
+       credentialPath = TextEditingController(text: credentialPath),
+       credentialRef = TextEditingController(text: credentialRef),
+       certificateRef = TextEditingController(text: certificateRef);
 
+  final TextEditingController id;
   final TextEditingController name;
   final TextEditingController relayAddress;
   final TextEditingController serverName;
   final TextEditingController certificatePath;
   final TextEditingController credentialPath;
+  final TextEditingController credentialRef;
+  final TextEditingController certificateRef;
   ClientTrustMode trustMode;
 
   bool get isComplete => [
     name.text,
     relayAddress.text,
     serverName.text,
-    credentialPath.text,
-    if (trustMode == ClientTrustMode.customCa) certificatePath.text,
+    credentialRef.text.isNotEmpty ? credentialRef.text : credentialPath.text,
+    if (trustMode == ClientTrustMode.customCa)
+      certificateRef.text.isNotEmpty
+          ? certificateRef.text
+          : certificatePath.text,
   ].every((value) => value.trim().isNotEmpty);
 
   void dispose() {
+    id.dispose();
     name.dispose();
     relayAddress.dispose();
     serverName.dispose();
     certificatePath.dispose();
     credentialPath.dispose();
+    credentialRef.dispose();
+    certificateRef.dispose();
   }
 }
 
@@ -52,6 +67,8 @@ class ClientConfigurationPanel extends StatelessWidget {
     required this.onSelectNode,
     required this.onTrustModeChanged,
     required this.library,
+    required this.profileFile,
+    required this.onImportProfile,
     super.key,
   });
 
@@ -64,6 +81,8 @@ class ClientConfigurationPanel extends StatelessWidget {
   final ValueChanged<int> onSelectNode;
   final void Function(RelayNodeDraft, ClientTrustMode) onTrustModeChanged;
   final TextEditingController library;
+  final TextEditingController profileFile;
+  final Future<void> Function() onImportProfile;
 
   bool get _isEditable => const {
     ClientRuntimePhase.stopped,
@@ -87,6 +106,27 @@ class ClientConfigurationPanel extends StatelessWidget {
             'Update the relay details before connecting. Sensitive values remain local to this device.',
           ),
           const SizedBox(height: 20),
+          ClientPanel(
+            child: Column(
+              children: [
+                _field(
+                  profileFile,
+                  'Velum profile YAML',
+                  'Native-validated profile imported into application-managed storage',
+                ),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: OutlinedButton.icon(
+                    key: const ValueKey('import-profile'),
+                    onPressed: _isEditable ? onImportProfile : null,
+                    icon: const Icon(Icons.file_open_outlined),
+                    label: const Text('Import profile'),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 16),
           for (var index = 0; index < nodes.length; index++) ...[
             _NodeEditor(
               key: ValueKey(nodes[index]),
@@ -204,6 +244,7 @@ class _NodeEditor extends StatelessWidget {
           ],
         ),
         const SizedBox(height: 12),
+        _nodeField(node.id, 'Node ID', 'Stable profile identifier'),
         _nodeField(node.name, 'Node name', 'A local name for this relay'),
         _nodeField(
           node.relayAddress,
@@ -244,14 +285,29 @@ class _NodeEditor extends StatelessWidget {
         const SizedBox(height: 16),
         if (node.trustMode == ClientTrustMode.customCa)
           _nodeField(
+            node.certificateRef,
+            'CA secret reference',
+            'secret://velum/... reference in platform secure storage',
+            required: false,
+          ),
+        if (node.trustMode == ClientTrustMode.customCa)
+          _nodeField(
             node.certificatePath,
             'CA certificate file',
             'PEM file used to verify the relay',
+            required: false,
           ),
+        _nodeField(
+          node.credentialRef,
+          'Credential secret reference',
+          'secret://velum/... reference in platform secure storage',
+          required: false,
+        ),
         _nodeField(
           node.credentialPath,
           'Credential file',
           'Hexadecimal credential supplied by the operator',
+          required: false,
         ),
       ],
     ),
@@ -260,8 +316,9 @@ class _NodeEditor extends StatelessWidget {
   Widget _nodeField(
     TextEditingController controller,
     String label,
-    String helper,
-  ) => Padding(
+    String helper, {
+    bool required = true,
+  }) => Padding(
     padding: const EdgeInsets.only(bottom: 16),
     child: TextFormField(
       controller: controller,
@@ -271,8 +328,9 @@ class _NodeEditor extends StatelessWidget {
         helperText: helper,
         border: const OutlineInputBorder(),
       ),
-      validator: (value) =>
-          value == null || value.trim().isEmpty ? '$label is required.' : null,
+      validator: (value) => required && (value == null || value.trim().isEmpty)
+          ? '$label is required.'
+          : null,
     ),
   );
 }

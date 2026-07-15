@@ -11,8 +11,10 @@ final class MacosProxyBackend extends CommandProxyBackend {
     final services = <String, Object?>{};
     for (final service in await _services()) {
       services[service] = <String, Object?>{
+        'http': await _proxyState(service, 'webproxy'),
         'https': await _proxyState(service, 'securewebproxy'),
         'socks': await _proxyState(service, 'socksfirewallproxy'),
+        'pac': await _proxyState(service, 'autoproxyurl'),
         'bypass': await _bypassDomains(service),
       };
     }
@@ -20,9 +22,14 @@ final class MacosProxyBackend extends CommandProxyBackend {
   }
 
   @override
-  Future<void> enable(int port) async {
+  Future<void> enable(int port, {required List<String> bypassHosts}) async {
     for (final service in await _services()) {
-      for (final kind in ['securewebproxy', 'socksfirewallproxy']) {
+      await checked('/usr/sbin/networksetup', [
+        '-setautoproxystate',
+        service,
+        'off',
+      ]);
+      for (final kind in ['webproxy', 'securewebproxy', 'socksfirewallproxy']) {
         await checked('/usr/sbin/networksetup', [
           '-set$kind',
           service,
@@ -38,9 +45,7 @@ final class MacosProxyBackend extends CommandProxyBackend {
       await checked('/usr/sbin/networksetup', [
         '-setproxybypassdomains',
         service,
-        'localhost',
-        '127.0.0.1',
-        '::1',
+        if (bypassHosts.isEmpty) 'Empty' else ...bypassHosts,
       ]);
     }
   }
@@ -52,6 +57,7 @@ final class MacosProxyBackend extends CommandProxyBackend {
       final service = serviceEntry.key;
       final values = serviceEntry.value as Map<String, Object?>;
       for (final (key, kind) in [
+        ('http', 'webproxy'),
         ('https', 'securewebproxy'),
         ('socks', 'socksfirewallproxy'),
       ]) {
@@ -72,6 +78,20 @@ final class MacosProxyBackend extends CommandProxyBackend {
           state['enabled'] == true ? 'on' : 'off',
         ]);
       }
+      final pac = values['pac'] as Map<String, Object?>;
+      final pacUrl = pac['server'] as String?;
+      if (pacUrl != null && pacUrl.isNotEmpty) {
+        await checked('/usr/sbin/networksetup', [
+          '-setautoproxyurl',
+          service,
+          pacUrl,
+        ]);
+      }
+      await checked('/usr/sbin/networksetup', [
+        '-setautoproxystate',
+        service,
+        pac['enabled'] == true ? 'on' : 'off',
+      ]);
       final bypass = (values['bypass'] as List<Object?>).cast<String>();
       await checked('/usr/sbin/networksetup', [
         '-setproxybypassdomains',
@@ -111,7 +131,7 @@ final class MacosProxyBackend extends CommandProxyBackend {
     }
     return {
       'enabled': fields['enabled']?.toLowerCase() == 'yes',
-      'server': switch (fields['server']) {
+      'server': switch (fields['server'] ?? fields['url']) {
         null || '' => null,
         final v => v,
       },

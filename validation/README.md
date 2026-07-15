@@ -13,6 +13,8 @@ evidence by itself.
 - `results/README.md` defines the retained raw-result layout and its executable
   integrity checks.
 - `harness/README.md` documents the dependency-free workload generator.
+- `desktop-tun/README.md` defines the cross-platform privileged-host release
+  evidence gate.
 - `validate.mjs` checks manifest structure, identifiers, and cross-references.
 
 ## Validation

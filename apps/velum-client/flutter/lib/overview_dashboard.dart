@@ -4,6 +4,8 @@ import 'client_theme.dart';
 import 'native_client.dart';
 import 'public_ip_service.dart';
 import 'traffic_chart.dart';
+import 'traffic_mode_controller.dart';
+import 'traffic_mode_panel.dart';
 
 class OverviewDashboard extends StatelessWidget {
   const OverviewDashboard({
@@ -12,6 +14,12 @@ class OverviewDashboard extends StatelessWidget {
     required this.serverName,
     required this.configurationReady,
     required this.onConfigure,
+    required this.availableTrafficModes,
+    required this.selectedTrafficMode,
+    required this.activeTrafficMode,
+    required this.trafficModePhase,
+    required this.trafficModeError,
+    required this.onTrafficModeChanged,
     super.key,
   });
 
@@ -20,6 +28,12 @@ class OverviewDashboard extends StatelessWidget {
   final String serverName;
   final bool configurationReady;
   final VoidCallback onConfigure;
+  final Set<TrafficMode> availableTrafficModes;
+  final TrafficMode selectedTrafficMode;
+  final TrafficMode activeTrafficMode;
+  final TrafficModePhase trafficModePhase;
+  final String? trafficModeError;
+  final ValueChanged<TrafficMode>? onTrafficModeChanged;
 
   @override
   Widget build(BuildContext context) {
@@ -46,61 +60,25 @@ class OverviewDashboard extends StatelessWidget {
               children: [
                 SizedBox(
                   width: cardWidth,
-                  child: ClientPanel(
-                    child: Column(
-                      children: [
-                        Text(
-                          'Connection',
-                          style: Theme.of(context).textTheme.titleMedium,
-                        ),
-                        const SizedBox(height: 24),
-                        Text(
-                          status.$1,
-                          style: TextStyle(
-                            color: status.$2,
-                            fontWeight: FontWeight.w700,
-                          ),
-                        ),
-                      ],
-                    ),
+                  child: _ConnectionCard(
+                    status: status,
+                    relayAddress: relayAddress,
+                    serverName: serverName,
+                    configurationReady: configurationReady,
+                    onConfigure: onConfigure,
                   ),
                 ),
                 SizedBox(
                   width: cardWidth,
-                  child: _DashboardCard(
-                    title: 'Current node',
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        _ValueRow(
-                          'Relay',
-                          relayAddress.isEmpty
-                              ? 'Not configured'
-                              : relayAddress,
-                        ),
-                        const SizedBox(height: 12),
-                        _ValueRow(
-                          'Server name',
-                          serverName.isEmpty ? 'Not configured' : serverName,
-                        ),
-                        const SizedBox(height: 12),
-                        _ValueRow(
-                          'Configuration',
-                          configurationReady
-                              ? 'Ready to connect'
-                              : 'Needs configuration',
-                          color: configurationReady
-                              ? ClientTheme.accent
-                              : ClientTheme.warning,
-                        ),
-                        const SizedBox(height: 16),
-                        OutlinedButton.icon(
-                          onPressed: onConfigure,
-                          icon: const Icon(Icons.tune_rounded, size: 16),
-                          label: const Text('Open configuration'),
-                        ),
-                      ],
-                    ),
+                  child: TrafficModePanel(
+                    compact: true,
+                    availableModes: availableTrafficModes,
+                    selectedMode: selectedTrafficMode,
+                    activeMode: activeTrafficMode,
+                    phase: trafficModePhase,
+                    runtimeOnline: online,
+                    error: trafficModeError,
+                    onModeChanged: onTrafficModeChanged,
                   ),
                 ),
                 SizedBox(
@@ -118,9 +96,14 @@ class OverviewDashboard extends StatelessWidget {
                         const SizedBox(height: 12),
                         _ValueRow('Generation', '${snapshot.generation}'),
                         const SizedBox(height: 12),
-                        const _ValueRow(
-                          'Diagnostics',
-                          'No retained events yet',
+                        _ValueRow(
+                          'Failure',
+                          snapshot.failure == ClientRuntimeFailure.none
+                              ? 'None'
+                              : snapshot.failure.name,
+                          color: snapshot.failure == ClientRuntimeFailure.none
+                              ? ClientTheme.text
+                              : ClientTheme.danger,
                         ),
                       ],
                     ),
@@ -131,7 +114,20 @@ class OverviewDashboard extends StatelessWidget {
                   child: _DashboardCard(
                     title: 'Traffic',
                     child: online
-                        ? const TrafficChart(samples: [])
+                        ? const Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              TrafficChart(samples: []),
+                              SizedBox(height: 10),
+                              Text(
+                                'No runtime traffic samples received yet.',
+                                style: TextStyle(
+                                  color: ClientTheme.muted,
+                                  fontSize: 11,
+                                ),
+                              ),
+                            ],
+                          )
                         : const Text(
                             'Connect to begin collecting runtime metrics.',
                             style: TextStyle(color: ClientTheme.muted),
@@ -145,6 +141,89 @@ class OverviewDashboard extends StatelessWidget {
       },
     );
   }
+}
+
+class _ConnectionCard extends StatelessWidget {
+  const _ConnectionCard({
+    required this.status,
+    required this.relayAddress,
+    required this.serverName,
+    required this.configurationReady,
+    required this.onConfigure,
+  });
+
+  final (String, Color) status;
+  final String relayAddress;
+  final String serverName;
+  final bool configurationReady;
+  final VoidCallback onConfigure;
+
+  @override
+  Widget build(BuildContext context) => ClientPanel(
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Container(
+              width: 34,
+              height: 34,
+              decoration: BoxDecoration(
+                color: status.$2.withValues(alpha: .10),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Icon(Icons.shield_outlined, size: 18, color: status.$2),
+            ),
+            const SizedBox(width: 11),
+            Expanded(
+              child: Text(
+                'Secure tunnel',
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
+            ),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
+              decoration: BoxDecoration(
+                color: status.$2.withValues(alpha: .09),
+                border: Border.all(color: status.$2.withValues(alpha: .22)),
+                borderRadius: BorderRadius.circular(20),
+              ),
+              child: Text(
+                status.$1.toUpperCase(),
+                style: TextStyle(
+                  color: status.$2,
+                  fontSize: 9,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 22),
+        _ValueRow(
+          'Relay',
+          relayAddress.isEmpty ? 'Not configured' : relayAddress,
+        ),
+        const SizedBox(height: 12),
+        _ValueRow(
+          'TLS server name',
+          serverName.isEmpty ? 'Not configured' : serverName,
+        ),
+        const SizedBox(height: 12),
+        _ValueRow(
+          'Configuration',
+          configurationReady ? 'Ready' : 'Needs configuration',
+          color: configurationReady ? ClientTheme.accent : ClientTheme.warning,
+        ),
+        const SizedBox(height: 18),
+        OutlinedButton.icon(
+          onPressed: onConfigure,
+          icon: const Icon(Icons.tune_rounded, size: 16),
+          label: const Text('Edit connection'),
+        ),
+      ],
+    ),
+  );
 }
 
 class _PublicIpCard extends StatefulWidget {

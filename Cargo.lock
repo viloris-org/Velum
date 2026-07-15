@@ -1285,6 +1285,7 @@ name = "velum-adapter-proxy"
 version = "0.0.0"
 dependencies = [
  "tokio",
+ "velum-client-routing",
  "velum-client-runtime",
 ]
 
@@ -1295,6 +1296,7 @@ dependencies = [
  "ipstack",
  "smoltcp",
  "tokio",
+ "velum-client-routing",
  "velum-client-runtime",
 ]
 
@@ -1337,6 +1339,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "velum-client-engine"
+version = "0.0.0"
+dependencies = [
+ "tokio",
+ "velum-client-runtime",
+]
+
+[[package]]
 name = "velum-client-ffi"
 version = "0.0.0"
 dependencies = [
@@ -1345,8 +1355,22 @@ dependencies = [
  "tokio",
  "velum-adapter-proxy",
  "velum-adapter-tun",
+ "velum-client-profile",
  "velum-client-runtime",
 ]
+
+[[package]]
+name = "velum-client-profile"
+version = "0.0.0"
+dependencies = [
+ "serde",
+ "serde_yaml_ng",
+ "velum-client-routing",
+]
+
+[[package]]
+name = "velum-client-routing"
+version = "0.0.0"
 
 [[package]]
 name = "velum-client-runtime"
@@ -1365,10 +1389,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "velum-desktop-traffic-host"
+version = "0.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "velum-helper-protocol",
+]
+
+[[package]]
 name = "velum-forest"
 version = "0.0.0"
 dependencies = [
  "tokio",
+]
+
+[[package]]
+name = "velum-helper-protocol"
+version = "0.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

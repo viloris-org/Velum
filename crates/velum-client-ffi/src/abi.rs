@@ -6,6 +6,9 @@ pub const ABI_VERSION: u16 = 2;
 /// Stable version for the additive asynchronous runtime control ABI.
 pub const RUNTIME_ABI_VERSION: u16 = 2;
 
+/// Stable version for the native profile validation and normalization ABI.
+pub const PROFILE_ABI_VERSION: u16 = 3;
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct VelumByteSlice {
@@ -64,6 +67,20 @@ pub enum VelumControlStatus {
     Certificate = 4,
     Busy = 5,
     Internal = 6,
+}
+
+/// Status values for native profile ABI v3.
+#[repr(i32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum VelumProfileStatus {
+    Ok = 0,
+    InvalidArgument = 1,
+    Syntax = 2,
+    UnsupportedVersion = 3,
+    Limit = 4,
+    Validation = 5,
+    BufferTooSmall = 6,
+    Internal = 7,
 }
 
 #[repr(u32)]
@@ -153,6 +170,7 @@ mod tests {
         assert_eq!(align_of::<VelumStatus>(), 4);
         assert_eq!(VelumStatus::Protocol as i32, 11);
         assert_eq!(VelumControlStatus::Internal as i32, 6);
+        assert_eq!(VelumProfileStatus::Internal as i32, 7);
         assert_eq!(VelumRuntimePhase::Failed as u32, 4);
         assert_eq!(VelumRuntimeFailure::Transport as u32, 8);
     }

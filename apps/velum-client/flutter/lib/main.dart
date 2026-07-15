@@ -5,14 +5,16 @@ import 'dart:ui';
 
 import 'package:flutter/material.dart';
 
-import 'android_vpn.dart';
 import 'client_configuration.dart';
 import 'client_compact_navigation.dart';
 import 'client_controller.dart';
 import 'client_overview.dart';
+import 'client_profile.dart';
+import 'client_settings.dart';
 import 'client_theme.dart';
 import 'native_client.dart';
-import 'system_proxy.dart';
+import 'traffic_configuration.dart';
+import 'traffic_mode_controller.dart';
 
 void main() {
   runApp(const VelumClientApp());
@@ -47,28 +49,27 @@ class _ClientHomeState extends State<ClientHome> {
   final _library = TextEditingController(
     text: NativeClientRuntime.defaultLibraryName(),
   );
+  final _profileFile = TextEditingController();
   final _nodes = <RelayNodeDraft>[
     RelayNodeDraft(
+      id: 'local-relay',
       name: 'Local relay',
       relayAddress: '127.0.0.1:4433',
       serverName: 'localhost',
     ),
   ];
+  final _trafficConfiguration = TrafficConfigurationDraft();
+  final _profileRepository = ManagedProfileRepository.defaultForPlatform();
+  final _secretStore = ClientSecretStore();
 
   late final ClientController _clientController;
+  late final TrafficModeController _trafficController;
   late ClientRuntimeSnapshot _lastSnapshot;
   Object? _lastPollingError;
   var _selectedTab = 0;
   var _activeNodeIndex = 0;
   var _insecureTrustAcknowledged = false;
   var _sidebarExpanded = true;
-  final SystemProxy? _systemProxy =
-      Platform.isLinux || Platform.isMacOS || Platform.isWindows
-      ? SystemProxy()
-      : null;
-  final _androidVpn = AndroidVpn();
-  var _systemProxyEnabled = false;
-  var _tunEnabled = false;
 
   RelayNodeDraft get _activeNode => _nodes[_activeNodeIndex];
 
@@ -76,21 +77,28 @@ class _ClientHomeState extends State<ClientHome> {
   void initState() {
     super.initState();
     _clientController = widget.controller ?? ClientController();
+    _trafficController = TrafficModeController.platform(
+      runtime: _clientController,
+      libraryPath: () => _library.text.trim(),
+      systemProxyOptions: _trafficConfiguration.systemProxyOptions,
+      tunOptions: _trafficConfiguration.tunOptions,
+      routingRules: () => _trafficConfiguration.routingRules().serialize(),
+    );
     _lastSnapshot = _clientController.snapshot;
     _lastPollingError = _clientController.pollingError;
     _clientController.addListener(_handleControllerChanged);
-    if (_systemProxy != null) unawaited(_systemProxy.disable());
+    _trafficController.addListener(_handleTrafficChanged);
   }
 
   @override
   void dispose() {
-    if (_systemProxyEnabled) {
-      unawaited(_systemProxy!.disable());
-    }
-    if (_tunEnabled) unawaited(_androidVpn.stop());
+    _trafficController.removeListener(_handleTrafficChanged);
+    _trafficController.dispose();
     _clientController.removeListener(_handleControllerChanged);
     _clientController.dispose();
     _library.dispose();
+    _profileFile.dispose();
+    _trafficConfiguration.dispose();
     for (final node in _nodes) {
       node.dispose();
     }
@@ -102,8 +110,15 @@ class _ClientHomeState extends State<ClientHome> {
     if (phase == ClientRuntimePhase.stopping) return;
     if (phase == ClientRuntimePhase.online ||
         phase == ClientRuntimePhase.connecting) {
-      if (_systemProxyEnabled) await _disableSystemProxy();
-      if (_tunEnabled) await _disableTun();
+      if (_trafficController.activeMode != TrafficMode.off ||
+          _trafficController.busy) {
+        try {
+          await _trafficController.suspend();
+        } on Object {
+          _reportError('Traffic routing could not be disabled safely.');
+          return;
+        }
+      }
       try {
         _clientController.stop();
       } on ClientControlException catch (error) {
@@ -141,30 +156,95 @@ class _ClientHomeState extends State<ClientHome> {
 
   bool get _hasCompleteConfiguration => [
     _library.text,
+    _activeNode.id.text,
     _activeNode.relayAddress.text,
     _activeNode.serverName.text,
-    _activeNode.credentialPath.text,
+    _activeNode.credentialRef.text.isNotEmpty
+        ? _activeNode.credentialRef.text
+        : _activeNode.credentialPath.text,
     if (_activeNode.trustMode == ClientTrustMode.customCa)
-      _activeNode.certificatePath.text,
+      _activeNode.certificateRef.text.isNotEmpty
+          ? _activeNode.certificateRef.text
+          : _activeNode.certificatePath.text,
   ].every((value) => value.trim().isNotEmpty);
 
-  Future<ClientRuntimeConfiguration> _connectionRequest() async =>
-      ClientRuntimeConfiguration(
-        libraryPath: _library.text.trim(),
-        relayAddress: _activeNode.relayAddress.text.trim(),
-        serverName: _activeNode.serverName.text.trim(),
-        credential: _decodeCredential(
-          await File(_activeNode.credentialPath.text.trim()).readAsString(),
-        ),
-        trustMode: _activeNode.trustMode,
-        certificatePem: _activeNode.trustMode == ClientTrustMode.customCa
-            ? await File(_activeNode.certificatePath.text.trim()).readAsBytes()
-            : Uint8List(0),
+  Future<ClientRuntimeConfiguration> _connectionRequest() async {
+    final credential = _activeNode.credentialRef.text.trim().isEmpty
+        ? _decodeCredential(
+            await File(_activeNode.credentialPath.text.trim()).readAsString(),
+          )
+        : await _secretStore.credential(
+            _activeNode.credentialRef.text.trim(),
+            migrationFile: _activeNode.credentialPath.text,
+          );
+    final certificate = _activeNode.trustMode != ClientTrustMode.customCa
+        ? Uint8List(0)
+        : _activeNode.certificateRef.text.trim().isEmpty
+        ? await File(_activeNode.certificatePath.text.trim()).readAsBytes()
+        : await _secretStore.certificate(
+            _activeNode.certificateRef.text.trim(),
+            migrationFile: _activeNode.certificatePath.text,
+          );
+    return ClientRuntimeConfiguration(
+      libraryPath: _library.text.trim(),
+      relayAddress: _activeNode.relayAddress.text.trim(),
+      serverName: _activeNode.serverName.text.trim(),
+      credential: credential,
+      trustMode: _activeNode.trustMode,
+      certificatePem: certificate,
+    );
+  }
+
+  Future<void> _importProfile() async {
+    final sourcePath = _profileFile.text.trim();
+    if (sourcePath.isEmpty) {
+      _reportError('Select a Velum profile YAML file to import.');
+      return;
+    }
+    try {
+      final codec = NativeProfileCodec.open(_library.text.trim());
+      final profile = await _profileRepository.importFile(
+        sourcePath,
+        codec.normalize,
       );
+      if (!mounted) return;
+      final imported = profile.nodes.map((node) {
+        return RelayNodeDraft(
+          id: node.id,
+          name: node.alias,
+          relayAddress: node.relayAddress,
+          serverName: node.serverName,
+          credentialRef: node.credentialRef,
+          certificateRef: node.caRef ?? '',
+          trustMode: node.trustMode == 'custom-ca'
+              ? ClientTrustMode.customCa
+              : ClientTrustMode.system,
+        );
+      }).toList();
+      final active = imported.indexWhere(
+        (node) => node.id.text == profile.defaultNode,
+      );
+      setState(() {
+        for (final node in _nodes) {
+          node.dispose();
+        }
+        _nodes
+          ..clear()
+          ..addAll(imported);
+        _activeNodeIndex = active < 0 ? 0 : active;
+      });
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Imported ${profile.name}.')));
+    } on Object catch (error) {
+      _reportError('Profile import failed: $error');
+    }
+  }
 
   void _addNode() {
     setState(() {
-      _nodes.add(RelayNodeDraft(name: 'Node ${_nodes.length + 1}'));
+      final number = _nodes.length + 1;
+      _nodes.add(RelayNodeDraft(id: 'node-$number', name: 'Node $number'));
       _activeNodeIndex = _nodes.length - 1;
     });
   }
@@ -218,86 +298,27 @@ class _ClientHomeState extends State<ClientHome> {
       _lastSnapshot = next;
       _lastPollingError = pollingError;
     });
-    if (_systemProxyEnabled && next.phase != ClientRuntimePhase.online) {
-      _disableSystemProxy();
-    }
-    if (_tunEnabled && next.phase != ClientRuntimePhase.online) _disableTun();
   }
 
-  Future<void> _toggleSystemProxy(bool enabled) async {
-    if (enabled) {
-      if (_clientController.snapshot.phase != ClientRuntimePhase.online) {
-        _reportError('Connect to the relay before enabling the system proxy.');
-        return;
-      }
-      try {
-        final port = _clientController.startLoopbackProxy();
-        await _systemProxy!.enable(port);
-        if (!mounted) return;
-        setState(() => _systemProxyEnabled = true);
-      } on Object {
-        try {
-          await _systemProxy!.disable();
-        } on Object {
-          // Keep the original failure as the user-visible outcome.
-        }
-        try {
-          _clientController.stopLoopbackProxy();
-        } on Object {
-          // The system setting was not installed, so cleanup is best effort.
-        }
-        _reportError('The system proxy could not be enabled.');
-      }
-      return;
-    }
-    await _disableSystemProxy();
+  void _handleTrafficChanged() {
+    if (mounted) setState(() {});
   }
 
-  Future<void> _disableSystemProxy() async {
-    try {
-      await _systemProxy!.disable();
-    } on Object {
-      _reportError('The system proxy could not be disabled.');
+  Future<void> _selectTrafficMode(TrafficMode mode) async {
+    final configurationError = switch (mode) {
+      TrafficMode.off => null,
+      TrafficMode.systemProxy => _trafficConfiguration.validateSystemProxy(),
+      TrafficMode.tun => _trafficConfiguration.validateTun(),
+    };
+    if (configurationError case final error?) {
+      _reportError(error);
       return;
     }
     try {
-      _clientController.stopLoopbackProxy();
+      await _trafficController.select(mode);
     } on Object {
-      // The system setting is already disabled; the native runtime will also
-      // release its listener during stop and destroy.
+      if (_trafficController.error case final message?) _reportError(message);
     }
-    if (mounted) setState(() => _systemProxyEnabled = false);
-  }
-
-  Future<void> _toggleTun(bool enabled) async {
-    if (!enabled) {
-      await _disableTun();
-      return;
-    }
-    if (_clientController.snapshot.phase != ClientRuntimePhase.online) {
-      _reportError('Connect to the relay before enabling TUN.');
-      return;
-    }
-    try {
-      if (!await _androidVpn.requestPermission()) return;
-      await _androidVpn.start(
-        runtimeHandle: _clientController.runtimeHandleForTun(),
-        libraryPath: _library.text.trim(),
-      );
-      if (mounted) setState(() => _tunEnabled = true);
-    } on Object {
-      _reportError('The Android VPN could not be started.');
-    }
-  }
-
-  Future<void> _disableTun() async {
-    try {
-      await _androidVpn.stop();
-    } on Object {
-      _reportError('The Android VPN could not be stopped.');
-      return;
-    }
-    if (mounted) setState(() => _tunEnabled = false);
   }
 
   void _reportError(String message) {
@@ -327,6 +348,12 @@ class _ClientHomeState extends State<ClientHome> {
         serverName: _activeNode.serverName.text.trim(),
         configurationReady: configurationReady,
         onConfigure: () => _selectTab(2),
+        availableTrafficModes: _trafficController.availableModes,
+        selectedTrafficMode: _trafficController.selectedMode,
+        activeTrafficMode: _trafficController.activeMode,
+        trafficModePhase: _trafficController.phase,
+        trafficModeError: _trafficController.error,
+        onTrafficModeChanged: _selectTrafficMode,
       ),
       1 => _NodesPanel(
         nodes: _nodes,
@@ -348,64 +375,90 @@ class _ClientHomeState extends State<ClientHome> {
         onSelectNode: _selectActiveNode,
         onTrustModeChanged: _changeTrustMode,
         library: _library,
+        profileFile: _profileFile,
+        onImportProfile: _importProfile,
       ),
-      _ => _SettingsPanel(
-        systemProxyEnabled: _systemProxyEnabled,
-        tunEnabled: _tunEnabled,
-        isAndroid: Platform.isAndroid,
-        available: Platform.isLinux || Platform.isMacOS || Platform.isWindows,
-        runtimeOnline: snapshot.phase == ClientRuntimePhase.online,
-        onSystemProxyChanged: _toggleSystemProxy,
-        onTunChanged: _toggleTun,
+      _ => ClientSettingsPanel(
+        controller: _trafficController,
+        configuration: _trafficConfiguration,
+        onModeChanged: _selectTrafficMode,
+        onConfigurationChanged: () => setState(() {}),
       ),
     };
     return Scaffold(
-      body: SafeArea(
-        child: LayoutBuilder(
-          builder: (context, constraints) {
-            final wide = constraints.maxWidth >= 900;
-            final content = Expanded(
-              child: Padding(
-                padding: EdgeInsets.fromLTRB(
-                  wide ? 48 : 24,
-                  36,
-                  wide ? 48 : 24,
-                  wide ? 96 : 176,
+      body: ClientBackdrop(
+        child: SafeArea(
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              final wide = constraints.maxWidth >= 900;
+              final content = Expanded(
+                child: Padding(
+                  padding: EdgeInsets.fromLTRB(
+                    wide ? 48 : 24,
+                    36,
+                    wide ? 48 : 24,
+                    wide ? 96 : 176,
+                  ),
+                  child: page,
                 ),
-                child: page,
-              ),
-            );
-            if (wide) {
+              );
+              if (wide) {
+                return Stack(
+                  children: [
+                    Row(
+                      children: [
+                        _Sidebar(
+                          selectedIndex: _selectedTab,
+                          onSelected: _selectTab,
+                          online: snapshot.phase == ClientRuntimePhase.online,
+                          expanded: _sidebarExpanded,
+                        ),
+                        Expanded(
+                          child: Column(
+                            children: [
+                              _TopBar(
+                                title: _pageTitle,
+                                snapshot: snapshot,
+                                sidebarExpanded: _sidebarExpanded,
+                                onToggleSidebar: () => setState(
+                                  () => _sidebarExpanded = !_sidebarExpanded,
+                                ),
+                              ),
+                              content,
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                    Positioned(
+                      right: 32,
+                      bottom: 28,
+                      child: _ConnectionAction(
+                        snapshot: snapshot,
+                        configurationReady: configurationReady,
+                        onConfigure: () => _selectTab(2),
+                        onToggle: _toggleConnection,
+                      ),
+                    ),
+                  ],
+                );
+              }
               return Stack(
                 children: [
-                  Row(
+                  Column(
                     children: [
-                      _Sidebar(
-                        selectedIndex: _selectedTab,
-                        onSelected: _selectTab,
-                        online: snapshot.phase == ClientRuntimePhase.online,
-                        expanded: _sidebarExpanded,
+                      _TopBar(
+                        title: _pageTitle,
+                        snapshot: snapshot,
+                        sidebarExpanded: false,
+                        onToggleSidebar: () {},
                       ),
-                      Expanded(
-                        child: Column(
-                          children: [
-                            _TopBar(
-                              title: _pageTitle,
-                              snapshot: snapshot,
-                              sidebarExpanded: _sidebarExpanded,
-                              onToggleSidebar: () => setState(
-                                () => _sidebarExpanded = !_sidebarExpanded,
-                              ),
-                            ),
-                            content,
-                          ],
-                        ),
-                      ),
+                      content,
                     ],
                   ),
                   Positioned(
-                    right: 32,
-                    bottom: 28,
+                    right: 24,
+                    bottom: 92,
                     child: _ConnectionAction(
                       snapshot: snapshot,
                       configurationReady: configurationReady,
@@ -413,47 +466,22 @@ class _ClientHomeState extends State<ClientHome> {
                       onToggle: _toggleConnection,
                     ),
                   ),
+                  Positioned(
+                    left: 14,
+                    right: 14,
+                    bottom: 10,
+                    child: SizedBox(
+                      height: 68,
+                      child: ClientCompactNavigation(
+                        selectedIndex: _selectedTab,
+                        onSelected: _selectTab,
+                      ),
+                    ),
+                  ),
                 ],
               );
-            }
-            return Stack(
-              children: [
-                Column(
-                  children: [
-                    _TopBar(
-                      title: _pageTitle,
-                      snapshot: snapshot,
-                      sidebarExpanded: false,
-                      onToggleSidebar: () {},
-                    ),
-                    content,
-                  ],
-                ),
-                Positioned(
-                  right: 24,
-                  bottom: 92,
-                  child: _ConnectionAction(
-                    snapshot: snapshot,
-                    configurationReady: configurationReady,
-                    onConfigure: () => _selectTab(2),
-                    onToggle: _toggleConnection,
-                  ),
-                ),
-                Positioned(
-                  left: 14,
-                  right: 14,
-                  bottom: 10,
-                  child: SizedBox(
-                    height: 68,
-                    child: ClientCompactNavigation(
-                      selectedIndex: _selectedTab,
-                      onSelected: _selectTab,
-                    ),
-                  ),
-                ),
-              ],
-            );
-          },
+            },
+          ),
         ),
       ),
     );
@@ -946,83 +974,6 @@ class _ConnectionAction extends StatelessWidget {
       ),
     );
   }
-}
-
-class _SettingsPanel extends StatelessWidget {
-  const _SettingsPanel({
-    required this.systemProxyEnabled,
-    required this.tunEnabled,
-    required this.isAndroid,
-    required this.available,
-    required this.runtimeOnline,
-    required this.onSystemProxyChanged,
-    required this.onTunChanged,
-  });
-
-  final bool systemProxyEnabled;
-  final bool tunEnabled;
-  final bool isAndroid;
-  final bool available;
-  final bool runtimeOnline;
-  final ValueChanged<bool> onSystemProxyChanged;
-  final ValueChanged<bool> onTunChanged;
-
-  @override
-  Widget build(BuildContext context) => ListView(
-    children: [
-      const SectionLabel('Settings'),
-      const SizedBox(height: 12),
-      const Text(
-        'Settings',
-        style: TextStyle(fontSize: 21, fontWeight: FontWeight.w700),
-      ),
-      const SizedBox(height: 6),
-      const Text('This local client does not require an account.'),
-      const SizedBox(height: 20),
-      ClientPanel(
-        child: SwitchListTile(
-          contentPadding: EdgeInsets.zero,
-          title: Text(isAndroid ? 'TUN VPN' : 'System proxy'),
-          subtitle: Text(
-            !available && !isAndroid
-                ? 'Traffic capture is unavailable on this platform.'
-                : !runtimeOnline
-                ? 'Connect to the relay before enabling traffic capture.'
-                : isAndroid
-                ? 'Route device TCP, UDP, and DNS traffic through the active relay.'
-                : 'Route HTTPS CONNECT and SOCKS traffic through the active relay.',
-          ),
-          value: isAndroid ? tunEnabled : systemProxyEnabled,
-          onChanged: (available || isAndroid) && runtimeOnline
-              ? isAndroid
-                    ? onTunChanged
-                    : onSystemProxyChanged
-              : null,
-        ),
-      ),
-      const SizedBox(height: 16),
-      ClientPanel(
-        child: const Padding(
-          padding: EdgeInsets.zero,
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                'About Velum',
-                style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
-              ),
-              SizedBox(height: 12),
-              Text('Experimental encrypted-tunneling client.'),
-              SizedBox(height: 8),
-              Text(
-                'Apache-2.0 licensed. All configuration remains on this device.',
-              ),
-            ],
-          ),
-        ),
-      ),
-    ],
-  );
 }
 
 Uint8List _decodeCredential(String value) {

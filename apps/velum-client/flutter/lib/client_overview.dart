@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import 'native_client.dart';
 import 'overview_dashboard.dart';
+import 'traffic_mode_controller.dart';
 
 class ClientOverview extends StatelessWidget {
   const ClientOverview({
@@ -10,6 +11,12 @@ class ClientOverview extends StatelessWidget {
     required this.serverName,
     required this.configurationReady,
     required this.onConfigure,
+    this.availableTrafficModes = const {TrafficMode.off},
+    this.selectedTrafficMode = TrafficMode.off,
+    this.activeTrafficMode = TrafficMode.off,
+    this.trafficModePhase = TrafficModePhase.inactive,
+    this.trafficModeError,
+    this.onTrafficModeChanged,
     super.key,
   });
 
@@ -18,6 +25,12 @@ class ClientOverview extends StatelessWidget {
   final String serverName;
   final bool configurationReady;
   final VoidCallback onConfigure;
+  final Set<TrafficMode> availableTrafficModes;
+  final TrafficMode selectedTrafficMode;
+  final TrafficMode activeTrafficMode;
+  final TrafficModePhase trafficModePhase;
+  final String? trafficModeError;
+  final ValueChanged<TrafficMode>? onTrafficModeChanged;
 
   @override
   Widget build(BuildContext context) => OverviewDashboard(
@@ -26,5 +39,11 @@ class ClientOverview extends StatelessWidget {
     serverName: serverName,
     configurationReady: configurationReady,
     onConfigure: onConfigure,
+    availableTrafficModes: availableTrafficModes,
+    selectedTrafficMode: selectedTrafficMode,
+    activeTrafficMode: activeTrafficMode,
+    trafficModePhase: trafficModePhase,
+    trafficModeError: trafficModeError,
+    onTrafficModeChanged: onTrafficModeChanged,
   );
 }

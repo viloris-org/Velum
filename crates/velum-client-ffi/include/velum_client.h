@@ -10,6 +10,7 @@ extern "C" {
 
 typedef int32_t VelumStatus;
 typedef int32_t VelumControlStatus;
+typedef int32_t VelumProfileStatus;
 
 #define VELUM_STATUS_OK 0
 #define VELUM_STATUS_INVALID_ARGUMENT 1
@@ -31,6 +32,15 @@ typedef int32_t VelumControlStatus;
 #define VELUM_CONTROL_CERTIFICATE 4
 #define VELUM_CONTROL_BUSY 5
 #define VELUM_CONTROL_INTERNAL 6
+
+#define VELUM_PROFILE_OK 0
+#define VELUM_PROFILE_INVALID_ARGUMENT 1
+#define VELUM_PROFILE_SYNTAX 2
+#define VELUM_PROFILE_UNSUPPORTED_VERSION 3
+#define VELUM_PROFILE_LIMIT 4
+#define VELUM_PROFILE_VALIDATION 5
+#define VELUM_PROFILE_BUFFER_TOO_SMALL 6
+#define VELUM_PROFILE_INTERNAL 7
 
 #define VELUM_RUNTIME_STOPPED 0U
 #define VELUM_RUNTIME_CONNECTING 1U
@@ -80,6 +90,15 @@ typedef struct VelumRuntimeSnapshotV1 {
 
 uint16_t velum_client_abi_version(void);
 uint16_t velum_client_runtime_abi_version(void);
+uint16_t velum_client_profile_abi_version(void);
+
+VelumProfileStatus velum_client_profile_validate_v1(
+    VelumByteSlice input,
+    size_t *out_required);
+VelumProfileStatus velum_client_profile_normalize_v1(
+    VelumByteSlice input,
+    VelumMutableByteSlice output,
+    size_t *out_written);
 
 VelumStatus velum_client_connect(
     const VelumClientConfigInput *input,
@@ -114,11 +133,20 @@ VelumControlStatus velum_client_runtime_proxy_start(
     uint64_t runtime_handle,
     uint16_t requested_port,
     uint16_t *out_port);
+VelumControlStatus velum_client_runtime_proxy_start_v2(
+    uint64_t runtime_handle,
+    uint16_t requested_port,
+    VelumByteSlice rules,
+    uint16_t *out_port);
 VelumControlStatus velum_client_runtime_proxy_stop(uint64_t runtime_handle);
 VelumControlStatus velum_client_runtime_destroy(uint64_t runtime_handle);
 
 #if defined(__ANDROID__)
 int32_t velum_client_android_tun_run(uint64_t runtime_handle, int32_t tun_fd);
+int32_t velum_client_android_tun_run_v2(
+    uint64_t runtime_handle,
+    int32_t tun_fd,
+    uint16_t mtu);
 int32_t velum_client_android_tun_stop(void);
 #endif
 

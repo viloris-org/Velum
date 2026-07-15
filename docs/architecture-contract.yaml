@@ -86,10 +86,55 @@ modules:
     risk: critical
     unsafe_allowed: false
 
+  client-routing:
+    paths: ["crates/velum-client-routing/**"]
+    owner: client-maintainers
+    may_depend_on: []
+    public_api: ["crates/velum-client-routing/src/lib.rs"]
+    owns: [local-flow-classification, ordered-routing-policy, routing-actions]
+    risk: critical
+    unsafe_allowed: false
+
+  client-profile:
+    paths: ["crates/velum-client-profile/**"]
+    owner: client-maintainers
+    may_depend_on: [client-routing]
+    public_api: ["crates/velum-client-profile/src/lib.rs"]
+    owns: [client-profile-schema, profile-normalization, node-reference-validation]
+    risk: critical
+    unsafe_allowed: false
+
+  client-engine:
+    paths: ["crates/velum-client-engine/**"]
+    owner: client-maintainers
+    may_depend_on: [client-runtime]
+    public_api: ["crates/velum-client-engine/src/lib.rs"]
+    owns: [profile-generations, node-runtime-pool, node-failure-isolation]
+    risk: critical
+    unsafe_allowed: false
+
+  helper-protocol:
+    paths: ["crates/velum-helper-protocol/**"]
+    owner: security-maintainers
+    may_depend_on: []
+    public_api: ["crates/velum-helper-protocol/src/lib.rs"]
+    owns: [privileged-helper-control-contract, helper-message-bounds, helper-capabilities]
+    risk: critical
+    unsafe_allowed: false
+
+  desktop-traffic-host:
+    paths: ["crates/velum-desktop-traffic-host/**"]
+    owner: security-maintainers
+    may_depend_on: [helper-protocol]
+    public_api: ["crates/velum-desktop-traffic-host/src/lib.rs"]
+    owns: [privileged-traffic-lifecycle, network-mutation-journal, helper-idempotency]
+    risk: critical
+    unsafe_allowed: false
+
   client-ffi:
     paths: ["crates/velum-client-ffi/**"]
     owner: client-maintainers
-    may_depend_on: [client-runtime, adapters]
+    may_depend_on: [client-runtime, client-engine, client-profile, client-routing, adapters]
     public_api:
       - "crates/velum-client-ffi/src/lib.rs"
       - "crates/velum-client-ffi/include/velum_client.h"
@@ -149,7 +194,7 @@ modules:
   adapters:
     paths: ["crates/velum-adapter-*/**"]
     owner: client-maintainers
-    may_depend_on: [client-runtime, session, telemetry]
+    may_depend_on: [client-runtime, client-routing, session, telemetry]
     public_api:
       - "crates/velum-adapter-proxy/src/lib.rs"
       - "crates/velum-adapter-tun/src/lib.rs"
@@ -168,6 +213,11 @@ modules:
       - carrier-quic
       - carrier-tls
       - client-runtime
+      - client-engine
+      - client-profile
+      - client-routing
+      - helper-protocol
+      - desktop-traffic-host
       - adapters
       - server
       - telemetry
@@ -189,6 +239,16 @@ forbidden_dependencies:
     to: [carrier-tls, client-runtime, crypto, forest, policy, server, session]
   - from: client-runtime
     to: [carrier-api, carrier-quic, carrier-tls, crypto, forest, policy, protocol, server, session]
+  - from: client-routing
+    to: [client-api, client-runtime, client-engine, client-profile, client-ffi, adapters, protocol, session, policy, forest, carrier-api, carrier-quic, carrier-tls, server, applications]
+  - from: client-profile
+    to: [client-api, client-runtime, client-engine, client-ffi, adapters, protocol, session, policy, forest, carrier-api, carrier-quic, carrier-tls, server, applications]
+  - from: client-engine
+    to: [client-api, client-profile, client-routing, client-ffi, adapters, protocol, session, policy, forest, carrier-api, carrier-quic, carrier-tls, server, applications]
+  - from: helper-protocol
+    to: [client-api, client-runtime, client-engine, client-profile, client-routing, client-ffi, adapters, protocol, session, policy, forest, carrier-api, carrier-quic, carrier-tls, server, applications]
+  - from: desktop-traffic-host
+    to: [client-api, client-runtime, client-engine, client-profile, client-routing, client-ffi, adapters, protocol, session, policy, forest, carrier-api, carrier-quic, carrier-tls, server, applications]
   - from: client-ffi
     to: [carrier-api, carrier-quic, carrier-tls, client-api, crypto, forest, policy, protocol, server, session, telemetry]
   - from: forest

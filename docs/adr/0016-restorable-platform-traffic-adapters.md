@@ -1,6 +1,6 @@
 # ADR-0016: Restorable Platform Traffic Adapters
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-07-15
 - **Owner:** Client maintainers
 - **Stakeholders:** Android, release, security, and transport maintainers
@@ -71,6 +71,19 @@ slots. Stop order is packet engine, Android route/interface, then runtime.
 
 The current Android release slice covers IPv4 TCP, UDP, and DNS. The UI and
 release notes must not describe this slice as IPv6 VPN support.
+
+### Traffic mode control
+
+The platform UI exposes one traffic-routing mode selected from the adapters
+available on that platform. A dedicated controller owns desired mode, active
+mode, installation progress, and payload-free failure state. Desired mode may
+be selected while offline; it activates only after the authoritative runtime
+becomes online. Runtime loss removes OS integration while retaining the mode
+for the next connection. Explicit disconnect waits for an active adapter to be
+removed before stopping the encrypted runtime.
+
+The settings page renders this controller state and does not infer successful
+routing from the runtime's `Online` phase.
 
 Desktop TUN is a separate delivery stage. Linux capabilities/polkit, macOS
 Network Extension or privileged helper installation, and Windows Wintun/helper

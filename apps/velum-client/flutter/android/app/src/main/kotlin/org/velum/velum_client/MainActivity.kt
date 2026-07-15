@@ -19,7 +19,7 @@ class MainActivity : FlutterActivity() {
                     if (VpnService.prepare(this) != null) {
                         result.error("permission", "VPN permission has not been granted.", null)
                     } else {
-                        VelumVpnService.start(this, result)
+                        VelumVpnService.start(this, result, call.arguments)
                     }
                 }
                 "stop" -> {

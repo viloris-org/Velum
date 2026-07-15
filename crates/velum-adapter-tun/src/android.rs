@@ -18,7 +18,6 @@ use tokio::{
 };
 use velum_client_runtime::{ClientRuntime, DatagramSessionId};
 
-const MTU: u16 = 1500;
 const MAX_TCP_FLOWS: usize = 256;
 const MAX_UDP_FLOWS: usize = 256;
 const BUFFER_BYTES: usize = 16 * 1024;
@@ -29,6 +28,7 @@ type UdpRoutes = Arc<Mutex<BTreeMap<DatagramSessionId, (SocketAddr, mpsc::Sender
 pub async fn run_android_tun(
     runtime: Arc<ClientRuntime>,
     tun_fd: i32,
+    mtu: u16,
     mut shutdown: watch::Receiver<bool>,
 ) -> io::Result<()> {
     if tun_fd < 0 || !runtime.is_generation_online(runtime.snapshot().generation) {
@@ -41,7 +41,7 @@ pub async fn run_android_tun(
     let device = tokio::fs::File::from_std(file);
     let mut config = IpStackConfig::default();
     config
-        .mtu(MTU)
+        .mtu(mtu)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
     config.udp_timeout(Duration::from_secs(30));
     let mut stack = IpStack::new(config, device);

@@ -52,6 +52,11 @@ questions. Proposed ADRs are not final protocol commitments.
 - [ADR-0013: Client runtime and platform host boundary](adr/0013-client-runtime-boundary.md)
 - [ADR-0014: Android TUN data plane](adr/0014-android-tun-data-plane.md)
 - [ADR-0015: Desktop system proxy](adr/0015-desktop-system-proxy.md)
+- [ADR-0016: Restorable platform traffic adapters](adr/0016-restorable-platform-traffic-adapters.md)
+- [ADR-0017: Local traffic routing policy](adr/0017-local-traffic-routing-policy.md)
+- [ADR-0018: Desktop privileged traffic host](adr/0018-desktop-privileged-traffic-host.md)
+- [ADR-0019: Profile and routing evolution](adr/0019-profile-and-routing-evolution.md)
+- [Privileged helper protocol v1](helper-protocol-v1.md)
 - [ADR-0011: Cover-service listener wiring](adr/0011-cover-service-listener-wiring.md)
 
 ## Document Status
@@ -69,6 +74,8 @@ questions. Proposed ADRs are not final protocol commitments.
 - `cargo xtask architecture` validates runtime ownership and dependency rules.
 - `cargo xtask docs` validates repository-local Markdown links.
 - `cargo xtask test` runs every current Foundation gate.
+- `cargo xtask client-test` builds the native client and runs Flutter analysis,
+  widget tests, and the non-skipped ABI v2/v3 integration tests.
 - `cargo xtask model-check` runs the deterministic Stage 1 tracer checks.
 
 Commands planned for later roadmap stages are not advertised as passing until

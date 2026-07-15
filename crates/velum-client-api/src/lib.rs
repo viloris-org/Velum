@@ -24,6 +24,7 @@ const OPEN_HEADER_BYTES: usize = 4;
 pub const API_VERSION: u16 = 1;
 
 /// Immutable inputs for one authenticated client connection.
+#[derive(Clone)]
 pub struct ClientConfig {
     relay_address: SocketAddr,
     server_name: String,
@@ -33,6 +34,7 @@ pub struct ClientConfig {
 }
 
 /// Server certificate verification source for one connection.
+#[derive(Clone)]
 pub enum ClientTrust {
     /// Verify against the operating system trust store and the configured name.
     System,

@@ -24,14 +24,14 @@ final class LinuxProxyBackend extends CommandProxyBackend {
   }
 
   @override
-  Future<void> enable(int port) async {
+  Future<void> enable(int port, {required List<String> bypassHosts}) async {
     switch (await _desktop()) {
       case _LinuxDesktop.gnome:
-        await _enableGSettings('org.gnome.system.proxy', port);
+        await _enableGSettings('org.gnome.system.proxy', port, bypassHosts);
       case _LinuxDesktop.mate:
-        await _enableGSettings('org.mate.system.proxy', port);
+        await _enableGSettings('org.mate.system.proxy', port, bypassHosts);
       case _LinuxDesktop.kde:
-        await _enableKde(port);
+        await _enableKde(port, bypassHosts);
     }
   }
 
@@ -73,6 +73,8 @@ final class LinuxProxyBackend extends CommandProxyBackend {
     for (final (subschema, key) in [
       (schema, 'mode'),
       (schema, 'ignore-hosts'),
+      ('$schema.http', 'host'),
+      ('$schema.http', 'port'),
       ('$schema.https', 'host'),
       ('$schema.https', 'port'),
       ('$schema.socks', 'host'),
@@ -87,13 +89,22 @@ final class LinuxProxyBackend extends CommandProxyBackend {
     );
   }
 
-  Future<void> _enableGSettings(String schema, int port) async {
+  Future<void> _enableGSettings(
+    String schema,
+    int port,
+    List<String> bypassHosts,
+  ) async {
+    final ignored = bypassHosts
+        .map((host) => "'${host.replaceAll("'", "\\'")}'")
+        .join(', ');
     for (final (subschema, key, value) in [
+      ('$schema.http', 'host', "'127.0.0.1'"),
+      ('$schema.http', 'port', '$port'),
       ('$schema.https', 'host', "'127.0.0.1'"),
       ('$schema.https', 'port', '$port'),
       ('$schema.socks', 'host', "'127.0.0.1'"),
       ('$schema.socks', 'port', '$port'),
-      (schema, 'ignore-hosts', "['localhost', '127.0.0.0/8', '::1']"),
+      (schema, 'ignore-hosts', '[$ignored]'),
       (schema, 'mode', "'manual'"),
     ]) {
       await checked('gsettings', ['set', subschema, key, value]);
@@ -103,7 +114,14 @@ final class LinuxProxyBackend extends CommandProxyBackend {
   Future<ProxySnapshot> _captureKde() async {
     final reader = await _kdeReader();
     final settings = <String, String>{};
-    for (final key in ['ProxyType', 'NoProxyFor', 'httpsProxy', 'socksProxy']) {
+    for (final key in [
+      'ProxyType',
+      'NoProxyFor',
+      'httpProxy',
+      'httpsProxy',
+      'socksProxy',
+      'Proxy Config Script',
+    ]) {
       final result = await checked(reader, [
         '--file',
         _kdeFile(),
@@ -122,12 +140,13 @@ final class LinuxProxyBackend extends CommandProxyBackend {
     );
   }
 
-  Future<void> _enableKde(int port) async {
+  Future<void> _enableKde(int port, List<String> bypassHosts) async {
     final executable = await _kdeWriter();
     for (final (key, value) in [
+      ('httpProxy', 'http://127.0.0.1:$port'),
       ('httpsProxy', 'https://127.0.0.1:$port'),
       ('socksProxy', 'socks://127.0.0.1:$port'),
-      ('NoProxyFor', 'localhost,127.0.0.1,::1'),
+      ('NoProxyFor', bypassHosts.join(',')),
       ('ProxyType', '1'),
     ]) {
       await checked(executable, [

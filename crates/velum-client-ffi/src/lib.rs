@@ -9,6 +9,7 @@ mod abi;
 mod configuration;
 mod control;
 mod handles;
+mod profile;
 mod streams;
 #[cfg(target_os = "android")]
 mod tun;
@@ -17,6 +18,7 @@ use std::sync::OnceLock;
 
 pub use abi::*;
 pub use control::*;
+pub use profile::*;
 pub use streams::*;
 use tokio::runtime::{Builder, Runtime};
 use velum_client_runtime::{ClientError, RuntimeError};

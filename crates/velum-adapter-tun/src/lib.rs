@@ -6,9 +6,11 @@
 
 #[cfg(target_os = "android")]
 mod android;
+mod fake_dns;
 
 #[cfg(target_os = "android")]
 pub use android::run_android_tun;
+pub use fake_dns::{FakeDnsError, FakeDnsMapping, FakeDnsTable};
 
 use std::{
     collections::{BTreeMap, VecDeque},
@@ -21,10 +23,11 @@ use smoltcp::{
     phy::{ChecksumCapabilities, Device, DeviceCapabilities, Medium, RxToken, TxToken},
     time::Instant,
     wire::{
-        HardwareAddress, IpAddress, IpCidr, IpProtocol, Ipv4Packet, Ipv4Repr, TcpPacket, UdpPacket,
-        UdpRepr,
+        HardwareAddress, IpAddress, IpCidr, IpProtocol, Ipv4Packet, Ipv4Repr, Ipv6Packet, Ipv6Repr,
+        TcpPacket, UdpPacket, UdpRepr,
     },
 };
+use velum_client_routing::{RouteContext, RoutingAction, RoutingPolicy};
 use velum_client_runtime::{
     ClientError, ClientRuntime, DatagramSessionId, RuntimeError, RuntimeStream,
 };
@@ -44,10 +47,83 @@ pub struct FlowKey {
     pub destination: SocketAddr,
 }
 
+/// One policy decision after fake-IP restoration.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TunRouteDecision {
+    pub action: RoutingAction,
+    pub destination: SocketAddr,
+    pub domain: Option<String>,
+}
+
+/// Shared routing and DNS identity state used by every platform TUN host.
+pub struct TunPolicyEngine {
+    policy: RoutingPolicy,
+    dns: FakeDnsTable,
+}
+
+impl TunPolicyEngine {
+    pub fn new(
+        generation: u64,
+        policy: RoutingPolicy,
+        dns_capacity: usize,
+    ) -> Result<Self, FakeDnsError> {
+        Ok(Self {
+            policy,
+            dns: FakeDnsTable::new(generation, dns_capacity)?,
+        })
+    }
+
+    pub fn allocate_dns(
+        &mut self,
+        generation: u64,
+        domain: &str,
+        real_address: std::net::IpAddr,
+        ttl: std::time::Duration,
+        now: std::time::Instant,
+    ) -> Result<std::net::IpAddr, FakeDnsError> {
+        self.dns
+            .allocate(generation, domain, real_address, ttl, now)
+    }
+
+    pub fn decide(
+        &mut self,
+        generation: u64,
+        flow: FlowKey,
+        now: std::time::Instant,
+    ) -> Result<TunRouteDecision, FakeDnsError> {
+        let mapping = self.dns.resolve(generation, flow.destination.ip(), now)?;
+        let (destination, domain) = mapping.map_or_else(
+            || (flow.destination, None),
+            |mapping| {
+                (
+                    SocketAddr::new(mapping.real_address, flow.destination.port()),
+                    Some(mapping.domain),
+                )
+            },
+        );
+        let action = self.policy.decide(RouteContext {
+            domain: domain.as_deref(),
+            destination: destination.ip(),
+            destination_port: destination.port(),
+        });
+        Ok(TunRouteDecision {
+            action,
+            destination,
+            domain,
+        })
+    }
+
+    pub fn replace_generation(&mut self, generation: u64, policy: RoutingPolicy) {
+        self.policy = policy;
+        self.dns.replace_generation(generation);
+    }
+}
+
 /// A packet that cannot safely enter the adapter flow table.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PacketError {
     MalformedIpv4,
+    MalformedIpv6,
     FragmentedIpv4,
     UnsupportedProtocol,
     MalformedTransport,
@@ -55,7 +131,7 @@ pub enum PacketError {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PacketEncodeError {
-    Ipv6Unsupported,
+    AddressFamilyMismatch,
     MtuExceeded,
 }
 
@@ -122,7 +198,10 @@ pub fn encode_udp_response(
 ) -> Result<Vec<u8>, PacketEncodeError> {
     let (source_ip, destination_ip) = match (flow.destination.ip(), flow.source.ip()) {
         (std::net::IpAddr::V4(source), std::net::IpAddr::V4(destination)) => (source, destination),
-        _ => return Err(PacketEncodeError::Ipv6Unsupported),
+        (std::net::IpAddr::V6(source), std::net::IpAddr::V6(destination)) => {
+            return encode_udp_response_ipv6(flow, source, destination, payload, mtu);
+        }
+        _ => return Err(PacketEncodeError::AddressFamilyMismatch),
     };
     let udp = UdpRepr {
         src_port: flow.destination.port(),
@@ -156,6 +235,47 @@ pub fn encode_udp_response(
     let source: IpAddress = source_ip.into();
     let destination: IpAddress = destination_ip.into();
     let mut packet = UdpPacket::new_unchecked(&mut frame[ipv4.buffer_len()..]);
+    udp.emit(
+        &mut packet,
+        &source,
+        &destination,
+        payload.len(),
+        |body| body.copy_from_slice(payload),
+        &ChecksumCapabilities::default(),
+    );
+    Ok(frame)
+}
+
+fn encode_udp_response_ipv6(
+    flow: FlowKey,
+    source_ip: std::net::Ipv6Addr,
+    destination_ip: std::net::Ipv6Addr,
+    payload: &[u8],
+    mtu: usize,
+) -> Result<Vec<u8>, PacketEncodeError> {
+    let udp = UdpRepr {
+        src_port: flow.destination.port(),
+        dst_port: flow.source.port(),
+    };
+    let ipv6 = Ipv6Repr {
+        src_addr: source_ip,
+        dst_addr: destination_ip,
+        next_header: IpProtocol::Udp,
+        payload_len: udp.header_len() + payload.len(),
+        hop_limit: 64,
+    };
+    let length = ipv6.buffer_len() + udp.header_len() + payload.len();
+    if length > mtu {
+        return Err(PacketEncodeError::MtuExceeded);
+    }
+    let mut frame = vec![0; length];
+    {
+        let mut packet = Ipv6Packet::new_unchecked(&mut frame);
+        ipv6.emit(&mut packet);
+    }
+    let source: IpAddress = source_ip.into();
+    let destination: IpAddress = destination_ip.into();
+    let mut packet = UdpPacket::new_unchecked(&mut frame[ipv6.buffer_len()..]);
     udp.emit(
         &mut packet,
         &source,
@@ -357,9 +477,16 @@ impl TunStack {
 
 /// Classifies one raw TUN frame without retaining its payload.
 ///
-/// Android TUN interfaces deliver layer-3 packets. The adapter intentionally
-/// accepts only IPv4 TCP and UDP in the first release; IPv6 requires a
-/// separate MTU, address, DNS, and device-evidence gate.
+/// Android TUN interfaces deliver layer-3 packets.
+pub fn classify_ip_packet(frame: &[u8]) -> Result<FlowKey, PacketError> {
+    match frame.first().map(|byte| byte >> 4) {
+        Some(4) => classify_ipv4_packet(frame),
+        Some(6) => classify_ipv6_packet(frame),
+        _ => Err(PacketError::UnsupportedProtocol),
+    }
+}
+
+/// Classifies one IPv4 TCP or UDP packet.
 pub fn classify_ipv4_packet(frame: &[u8]) -> Result<FlowKey, PacketError> {
     let packet = Ipv4Packet::new_checked(frame).map_err(|_| PacketError::MalformedIpv4)?;
     let ipv4 = Ipv4Repr::parse(&packet, &ChecksumCapabilities::ignored())
@@ -368,6 +495,44 @@ pub fn classify_ipv4_packet(frame: &[u8]) -> Result<FlowKey, PacketError> {
     let destination_ip = ipv4.dst_addr.into();
     let payload = packet.payload();
     let (protocol, source_port, destination_port) = match ipv4.next_header {
+        IpProtocol::Tcp => {
+            let transport =
+                TcpPacket::new_checked(payload).map_err(|_| PacketError::MalformedTransport)?;
+            (
+                FlowProtocol::Tcp,
+                transport.src_port(),
+                transport.dst_port(),
+            )
+        }
+        IpProtocol::Udp => {
+            let transport =
+                UdpPacket::new_checked(payload).map_err(|_| PacketError::MalformedTransport)?;
+            (
+                FlowProtocol::Udp,
+                transport.src_port(),
+                transport.dst_port(),
+            )
+        }
+        _ => return Err(PacketError::UnsupportedProtocol),
+    };
+    if destination_port == 0 {
+        return Err(PacketError::MalformedTransport);
+    }
+    Ok(FlowKey {
+        protocol,
+        source: SocketAddr::new(source_ip, source_port),
+        destination: SocketAddr::new(destination_ip, destination_port),
+    })
+}
+
+/// Classifies one IPv6 TCP or UDP packet without extension headers.
+pub fn classify_ipv6_packet(frame: &[u8]) -> Result<FlowKey, PacketError> {
+    let packet = Ipv6Packet::new_checked(frame).map_err(|_| PacketError::MalformedIpv6)?;
+    let ipv6 = Ipv6Repr::parse(&packet).map_err(|_| PacketError::MalformedIpv6)?;
+    let source_ip = ipv6.src_addr.into();
+    let destination_ip = ipv6.dst_addr.into();
+    let payload = packet.payload();
+    let (protocol, source_port, destination_port) = match ipv6.next_header {
         IpProtocol::Tcp => {
             let transport =
                 TcpPacket::new_checked(payload).map_err(|_| PacketError::MalformedTransport)?;
@@ -857,6 +1022,23 @@ mod tests {
         packet
     }
 
+    fn ipv6_packet(protocol: u8, transport: &[u8]) -> Vec<u8> {
+        let mut packet = vec![0; 40 + transport.len()];
+        packet[0] = 0x60;
+        packet[4..6].copy_from_slice(&(transport.len() as u16).to_be_bytes());
+        packet[6] = protocol;
+        packet[7] = 64;
+        packet[8..24].copy_from_slice(&std::net::Ipv6Addr::LOCALHOST.octets());
+        packet[24..40].copy_from_slice(
+            &"2001:db8::1"
+                .parse::<std::net::Ipv6Addr>()
+                .expect("IPv6")
+                .octets(),
+        );
+        packet[40..].copy_from_slice(transport);
+        packet
+    }
+
     fn tcp_packet() -> Vec<u8> {
         let mut tcp = [0_u8; 20];
         tcp[..2].copy_from_slice(&50_000_u16.to_be_bytes());
@@ -877,6 +1059,60 @@ mod tests {
                 destination: SocketAddr::from(([192, 0, 2, 10], 53)),
             })
         );
+    }
+
+    #[test]
+    fn classifies_and_encodes_ipv6_udp() {
+        let packet = ipv6_packet(17, &[0xc3, 0x50, 0x00, 0x35, 0x00, 0x08, 0x00, 0x00]);
+        let flow = classify_ip_packet(&packet).expect("IPv6 flow");
+        assert_eq!(flow.protocol, FlowProtocol::Udp);
+        assert_eq!(flow.source.port(), 50_000);
+        assert_eq!(flow.destination.port(), 53);
+        assert!(flow.destination.is_ipv6());
+
+        let response = encode_udp_response(flow, &[1, 2, 3], 1280).expect("response");
+        let response_flow = classify_ip_packet(&response).expect("response flow");
+        assert_eq!(response_flow.source, flow.destination);
+        assert_eq!(response_flow.destination, flow.source);
+    }
+
+    #[test]
+    fn fake_dns_restores_domain_before_shared_policy_decision() {
+        use velum_client_routing::{RoutingRule, RuleMatcher};
+
+        let policy = RoutingPolicy::new(vec![
+            RoutingRule::new(
+                RuleMatcher::domain_suffix("example.com").expect("domain"),
+                RoutingAction::Node("node-sg".into()),
+            ),
+            RoutingRule::new(RuleMatcher::Match, RoutingAction::Direct),
+        ])
+        .expect("policy");
+        let now = std::time::Instant::now();
+        let mut engine = TunPolicyEngine::new(3, policy, 32).expect("engine");
+        let fake = engine
+            .allocate_dns(
+                3,
+                "api.example.com",
+                "2001:db8::20".parse().expect("real IP"),
+                std::time::Duration::from_secs(60),
+                now,
+            )
+            .expect("fake IP");
+        let decision = engine
+            .decide(
+                3,
+                FlowKey {
+                    protocol: FlowProtocol::Tcp,
+                    source: "[fd00:19::2]:50000".parse().expect("source"),
+                    destination: SocketAddr::new(fake, 443),
+                },
+                now,
+            )
+            .expect("decision");
+        assert_eq!(decision.action, RoutingAction::Node("node-sg".into()));
+        assert_eq!(decision.domain.as_deref(), Some("api.example.com"));
+        assert_eq!(decision.destination, "[2001:db8::20]:443".parse().unwrap());
     }
 
     #[test]

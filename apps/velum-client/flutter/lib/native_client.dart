@@ -12,6 +12,13 @@ final class _VelumByteSlice extends Struct {
   external int length;
 }
 
+final class _VelumMutableByteSlice extends Struct {
+  external Pointer<Uint8> pointer;
+
+  @Size()
+  external int length;
+}
+
 final class _VelumClientConfigInput extends Struct {
   external _VelumByteSlice relayAddress;
   external _VelumByteSlice serverName;
@@ -42,6 +49,15 @@ final class VelumRuntimeSnapshotV1 extends Struct {
 
 typedef _RuntimeAbiVersionNative = Uint16 Function();
 typedef _RuntimeAbiVersionDart = int Function();
+typedef _ProfileAbiVersionNative = Uint16 Function();
+typedef _ProfileAbiVersionDart = int Function();
+typedef _ProfileValidateV1Native =
+    Int32 Function(_VelumByteSlice, Pointer<Size>);
+typedef _ProfileValidateV1Dart = int Function(_VelumByteSlice, Pointer<Size>);
+typedef _ProfileNormalizeV1Native =
+    Int32 Function(_VelumByteSlice, _VelumMutableByteSlice, Pointer<Size>);
+typedef _ProfileNormalizeV1Dart =
+    int Function(_VelumByteSlice, _VelumMutableByteSlice, Pointer<Size>);
 typedef _RuntimeCreateNative = Int32 Function(Pointer<Uint64>);
 typedef _RuntimeCreateDart = int Function(Pointer<Uint64>);
 typedef _RuntimeStartV1Native =
@@ -56,9 +72,10 @@ typedef _RuntimeStopNative = Int32 Function(Uint64, Pointer<Uint64>);
 typedef _RuntimeStopDart = int Function(int, Pointer<Uint64>);
 typedef _RuntimeDestroyNative = Int32 Function(Uint64);
 typedef _RuntimeDestroyDart = int Function(int);
-typedef _RuntimeProxyStartNative =
-    Int32 Function(Uint64, Uint16, Pointer<Uint16>);
-typedef _RuntimeProxyStartDart = int Function(int, int, Pointer<Uint16>);
+typedef _RuntimeProxyStartV2Native =
+    Int32 Function(Uint64, Uint16, _VelumByteSlice, Pointer<Uint16>);
+typedef _RuntimeProxyStartV2Dart =
+    int Function(int, int, _VelumByteSlice, Pointer<Uint16>);
 typedef _RuntimeProxyStopNative = Int32 Function(Uint64);
 typedef _RuntimeProxyStopDart = int Function(int);
 
@@ -70,6 +87,114 @@ enum ClientControlStatus {
   certificate,
   busy,
   internal,
+}
+
+enum ClientProfileStatus {
+  ok,
+  invalidArgument,
+  syntax,
+  unsupportedVersion,
+  limit,
+  validation,
+  bufferTooSmall,
+  internal,
+}
+
+class ClientProfileException implements Exception {
+  const ClientProfileException(this.status);
+
+  final ClientProfileStatus status;
+
+  @override
+  String toString() => switch (status) {
+    ClientProfileStatus.ok => 'The profile is valid.',
+    ClientProfileStatus.invalidArgument => 'The profile input is invalid.',
+    ClientProfileStatus.syntax => 'The profile YAML is malformed.',
+    ClientProfileStatus.unsupportedVersion =>
+      'The profile version is not supported.',
+    ClientProfileStatus.limit => 'The profile exceeds a safety limit.',
+    ClientProfileStatus.validation => 'The profile failed semantic validation.',
+    ClientProfileStatus.bufferTooSmall =>
+      'The native profile output buffer was too small.',
+    ClientProfileStatus.internal => 'The native profile service failed.',
+  };
+}
+
+/// Native authority for strict Velum profile parsing and normalization.
+final class NativeProfileCodec {
+  NativeProfileCodec._(this._validate, this._normalize);
+
+  static const _abiVersion = 3;
+
+  final _ProfileValidateV1Dart _validate;
+  final _ProfileNormalizeV1Dart _normalize;
+
+  factory NativeProfileCodec.open(String libraryPath) {
+    final library = DynamicLibrary.open(libraryPath);
+    final version = library
+        .lookup<NativeFunction<_ProfileAbiVersionNative>>(
+          'velum_client_profile_abi_version',
+        )
+        .asFunction<_ProfileAbiVersionDart>();
+    if (version() != _abiVersion) {
+      throw const ClientProfileException(
+        ClientProfileStatus.unsupportedVersion,
+      );
+    }
+    return NativeProfileCodec._(
+      library
+          .lookup<NativeFunction<_ProfileValidateV1Native>>(
+            'velum_client_profile_validate_v1',
+          )
+          .asFunction<_ProfileValidateV1Dart>(),
+      library
+          .lookup<NativeFunction<_ProfileNormalizeV1Native>>(
+            'velum_client_profile_normalize_v1',
+          )
+          .asFunction<_ProfileNormalizeV1Dart>(),
+    );
+  }
+
+  String normalize(String source) {
+    final bytes = Uint8List.fromList(utf8.encode(source));
+    final input = calloc<Uint8>(bytes.length);
+    final inputSlice = calloc<_VelumByteSlice>();
+    final required = calloc<Size>();
+    try {
+      input.asTypedList(bytes.length).setAll(0, bytes);
+      inputSlice.ref
+        ..pointer = input
+        ..length = bytes.length;
+      _checkProfileStatus(_validate(inputSlice.ref, required));
+      final output = calloc<Uint8>(required.value);
+      final outputSlice = calloc<_VelumMutableByteSlice>();
+      try {
+        outputSlice.ref
+          ..pointer = output
+          ..length = required.value;
+        _checkProfileStatus(
+          _normalize(inputSlice.ref, outputSlice.ref, required),
+        );
+        return utf8.decode(output.asTypedList(required.value));
+      } finally {
+        calloc.free(outputSlice);
+        calloc.free(output);
+      }
+    } finally {
+      input.asTypedList(bytes.length).fillRange(0, bytes.length, 0);
+      calloc.free(required);
+      calloc.free(inputSlice);
+      calloc.free(input);
+    }
+  }
+}
+
+void _checkProfileStatus(int value) {
+  if (value == ClientProfileStatus.ok.index) return;
+  if (value < 0 || value >= ClientProfileStatus.values.length) {
+    throw const ClientProfileException(ClientProfileStatus.internal);
+  }
+  throw ClientProfileException(ClientProfileStatus.values[value]);
 }
 
 enum ClientRuntimePhase { stopped, connecting, online, stopping, failed }
@@ -166,7 +291,10 @@ abstract interface class ClientRuntimeBridge {
 }
 
 abstract interface class ClientProxyBridge {
-  int startLoopbackProxy({int requestedPort = 0});
+  int startLoopbackProxy({
+    int requestedPort = 0,
+    String routingRules = 'MATCH,PROXY',
+  });
 
   void stopLoopbackProxy();
 }
@@ -182,7 +310,7 @@ class NativeClientRuntime
     required _RuntimeStartV1Dart start,
     required _RuntimeSnapshotV1Dart snapshot,
     required _RuntimeStopDart stop,
-    required _RuntimeProxyStartDart startProxy,
+    required _RuntimeProxyStartV2Dart startProxy,
     required _RuntimeProxyStopDart stopProxy,
     required _RuntimeDestroyDart destroy,
     required this.handle,
@@ -198,7 +326,7 @@ class NativeClientRuntime
   final _RuntimeStartV1Dart _start;
   final _RuntimeSnapshotV1Dart _snapshot;
   final _RuntimeStopDart _stop;
-  final _RuntimeProxyStartDart _startProxy;
+  final _RuntimeProxyStartV2Dart _startProxy;
   final _RuntimeProxyStopDart _stopProxy;
   final _RuntimeDestroyDart _destroy;
   final int handle;
@@ -251,10 +379,10 @@ class NativeClientRuntime
         )
         .asFunction<_RuntimeDestroyDart>();
     final startProxy = library
-        .lookup<NativeFunction<_RuntimeProxyStartNative>>(
-          'velum_client_runtime_proxy_start',
+        .lookup<NativeFunction<_RuntimeProxyStartV2Native>>(
+          'velum_client_runtime_proxy_start_v2',
         )
-        .asFunction<_RuntimeProxyStartDart>();
+        .asFunction<_RuntimeProxyStartV2Dart>();
     final stopProxy = library
         .lookup<NativeFunction<_RuntimeProxyStopNative>>(
           'velum_client_runtime_proxy_stop',
@@ -351,16 +479,32 @@ class NativeClientRuntime
   }
 
   @override
-  int startLoopbackProxy({int requestedPort = 0}) {
+  int startLoopbackProxy({
+    int requestedPort = 0,
+    String routingRules = 'MATCH,PROXY',
+  }) {
     _ensureAlive();
     if (requestedPort < 0 || requestedPort > 65535) {
       throw const ClientControlException(ClientControlStatus.invalidArgument);
     }
     final output = calloc<Uint16>();
+    final rules = Uint8List.fromList(utf8.encode(routingRules));
+    final rulesInput = calloc<Uint8>(rules.length);
     try {
-      _checkStatus(_startProxy(handle, requestedPort, output));
+      rulesInput.asTypedList(rules.length).setAll(0, rules);
+      final slice = calloc<_VelumByteSlice>();
+      try {
+        slice.ref
+          ..pointer = rulesInput
+          ..length = rules.length;
+        _checkStatus(_startProxy(handle, requestedPort, slice.ref, output));
+      } finally {
+        calloc.free(slice);
+      }
       return output.value;
     } finally {
+      rulesInput.asTypedList(rules.length).fillRange(0, rules.length, 0);
+      calloc.free(rulesInput);
       calloc.free(output);
     }
   }

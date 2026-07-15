@@ -7,11 +7,11 @@ use velum_client_runtime::{
 use crate::{
     ABI_VERSION, RUNTIME_ABI_VERSION, VelumClientConfigInput, VelumControlStatus,
     VelumRuntimeSnapshotV1, VelumStatus,
-    configuration::configuration_from_input,
+    configuration::{configuration_from_input, copy_bytes},
     executor,
     handles::{ClientEntry, handles},
 };
-use velum_adapter_proxy::ProxyAdapter;
+use velum_adapter_proxy::{ProxyAdapter, RoutingPolicy};
 
 enum SynchronousConnectError {
     Runtime(RuntimeError),
@@ -193,6 +193,49 @@ pub unsafe extern "C" fn velum_client_runtime_proxy_start(
     requested_port: u16,
     out_port: *mut u16,
 ) -> VelumControlStatus {
+    unsafe {
+        start_proxy_with_policy(
+            runtime_handle,
+            requested_port,
+            RoutingPolicy::default(),
+            out_port,
+        )
+    }
+}
+
+/// Starts the loopback proxy with an ordered UTF-8 routing policy.
+///
+/// # Safety
+///
+/// `rules` must be readable and `out_port` writable for this call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn velum_client_runtime_proxy_start_v2(
+    runtime_handle: u64,
+    requested_port: u16,
+    rules: crate::VelumByteSlice,
+    out_port: *mut u16,
+) -> VelumControlStatus {
+    let rules = match unsafe { copy_bytes(rules) } {
+        Ok(rules) => rules,
+        Err(error) => return error.into(),
+    };
+    let rules = match std::str::from_utf8(&rules) {
+        Ok(rules) => rules,
+        Err(_) => return VelumControlStatus::Configuration,
+    };
+    let policy = match rules.parse::<RoutingPolicy>() {
+        Ok(policy) if !policy.rules().is_empty() => policy,
+        Ok(_) | Err(_) => return VelumControlStatus::Configuration,
+    };
+    unsafe { start_proxy_with_policy(runtime_handle, requested_port, policy, out_port) }
+}
+
+unsafe fn start_proxy_with_policy(
+    runtime_handle: u64,
+    requested_port: u16,
+    policy: RoutingPolicy,
+    out_port: *mut u16,
+) -> VelumControlStatus {
     if out_port.is_null() {
         return VelumControlStatus::InvalidArgument;
     }
@@ -217,9 +260,10 @@ pub unsafe extern "C" fn velum_client_runtime_proxy_start(
     if proxy.is_some() {
         return VelumControlStatus::Busy;
     }
-    let adapter = match executor().block_on(ProxyAdapter::start(
+    let adapter = match executor().block_on(ProxyAdapter::start_with_policy(
         Arc::clone(&entry.runtime),
         requested_port,
+        policy,
     )) {
         Ok(adapter) => adapter,
         Err(_) => return VelumControlStatus::Internal,

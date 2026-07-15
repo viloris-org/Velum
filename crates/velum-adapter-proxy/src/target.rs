@@ -9,6 +9,13 @@ pub(crate) enum ProxyTarget {
 }
 
 impl ProxyTarget {
+    pub(crate) fn domain(&self) -> Option<&str> {
+        match self {
+            Self::Address(_) => None,
+            Self::Domain { host, .. } => Some(host),
+        }
+    }
+
     pub(crate) fn from_host_port(host: &[u8], port: u16) -> io::Result<Self> {
         if port == 0 {
             return Err(invalid_target("proxy target port must not be zero"));
@@ -38,6 +45,34 @@ impl ProxyTarget {
         Self::from_host_port(host.as_bytes(), port)
     }
 
+    pub(crate) fn from_http_authority(authority: &str) -> io::Result<Self> {
+        if authority.starts_with('[') {
+            let end = authority
+                .find(']')
+                .ok_or_else(|| invalid_target("IPv6 proxy authority is missing a bracket"))?;
+            let host = &authority[1..end];
+            let ip = host
+                .parse()
+                .map_err(|_| invalid_target("IPv6 proxy authority is invalid"))?;
+            let port = match &authority[end + 1..] {
+                "" => 80,
+                value => value
+                    .strip_prefix(':')
+                    .ok_or_else(|| invalid_target("IPv6 proxy authority is invalid"))?
+                    .parse()
+                    .map_err(|_| invalid_target("proxy authority contains an invalid port"))?,
+            };
+            return valid_address(SocketAddr::new(ip, port));
+        }
+        if authority.contains(':') {
+            return Self::from_authority(authority);
+        }
+        if let Ok(ip) = authority.parse() {
+            return valid_address(SocketAddr::new(ip, 80));
+        }
+        Self::from_host_port(authority.as_bytes(), 80)
+    }
+
     pub(crate) async fn resolve(self) -> io::Result<SocketAddr> {
         match self {
             Self::Address(address) => Ok(address),
@@ -47,6 +82,13 @@ impl ProxyTarget {
                 .ok_or_else(|| invalid_target("proxy target did not resolve")),
         }
     }
+}
+
+fn valid_address(address: SocketAddr) -> io::Result<ProxyTarget> {
+    if address.port() == 0 {
+        return Err(invalid_target("proxy target port must not be zero"));
+    }
+    Ok(ProxyTarget::Address(address))
 }
 
 fn validate_hostname(host: &str) -> io::Result<()> {
@@ -101,5 +143,20 @@ mod tests {
                 "{authority}"
             );
         }
+    }
+
+    #[test]
+    fn http_authorities_default_to_port_eighty() {
+        assert_eq!(
+            ProxyTarget::from_http_authority("example.com").expect("domain"),
+            ProxyTarget::Domain {
+                host: "example.com".into(),
+                port: 80,
+            }
+        );
+        assert!(matches!(
+            ProxyTarget::from_http_authority("[2001:db8::1]").expect("IPv6"),
+            ProxyTarget::Address(address) if address.port() == 80
+        ));
     }
 }

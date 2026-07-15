@@ -6,8 +6,9 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-smoltcp = { version = "=0.12.0", default-features = false, features = ["alloc", "medium-ip", "proto-ipv4", "socket-tcp", "socket-udp"] }
+smoltcp = { version = "=0.12.0", default-features = false, features = ["alloc", "medium-ip", "proto-ipv4", "proto-ipv6", "socket-tcp", "socket-udp"] }
 tokio = { version = "=1.52.3", features = ["fs", "io-util", "macros", "rt", "rt-multi-thread", "sync", "time"] }
+velum-client-routing = { version = "0.0.0", path = "../velum-client-routing" }
 velum-client-runtime = { version = "0.0.0", path = "../velum-client-runtime" }
 
 [target.'cfg(target_os = "android")'.dependencies]

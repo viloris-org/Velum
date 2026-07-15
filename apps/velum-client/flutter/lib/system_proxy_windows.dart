@@ -17,7 +17,12 @@ final class WindowsProxyBackend extends CommandProxyBackend {
   @override
   Future<ProxySnapshot> capture() async {
     final values = <String, Object?>{};
-    for (final name in ['ProxyEnable', 'ProxyServer', 'ProxyOverride']) {
+    for (final name in [
+      'ProxyEnable',
+      'ProxyServer',
+      'ProxyOverride',
+      'AutoConfigURL',
+    ]) {
       final result = await run('reg.exe', ['QUERY', _key, '/v', name]);
       values[name] = result.exitCode == 0
           ? _parseRegistryValue(result.stdout.toString(), name)
@@ -27,32 +32,29 @@ final class WindowsProxyBackend extends CommandProxyBackend {
   }
 
   @override
-  Future<void> enable(int port) async {
+  Future<void> enable(int port, {required List<String> bypassHosts}) async {
     await _set(
       'ProxyServer',
       'REG_SZ',
-      'https=127.0.0.1:$port;socks=127.0.0.1:$port',
+      'http=127.0.0.1:$port;https=127.0.0.1:$port;socks=127.0.0.1:$port',
     );
-    await _set('ProxyOverride', 'REG_SZ', '<local>;127.0.0.1;localhost');
+    await _delete('AutoConfigURL');
+    await _set('ProxyOverride', 'REG_SZ', bypassHosts.join(';'));
     await _set('ProxyEnable', 'REG_DWORD', '1');
     _refresh();
   }
 
   @override
   Future<void> restore(ProxySnapshot snapshot) async {
-    for (final name in ['ProxyServer', 'ProxyOverride', 'ProxyEnable']) {
+    for (final name in [
+      'ProxyServer',
+      'ProxyOverride',
+      'ProxyEnable',
+      'AutoConfigURL',
+    ]) {
       final value = snapshot.values[name] as Map<String, Object?>?;
       if (value == null) {
-        final result = await run('reg.exe', ['DELETE', _key, '/v', name, '/f']);
-        if (result.exitCode != 0 &&
-            !result.stderr.toString().contains('unable to find')) {
-          throw ProcessException(
-            'reg.exe',
-            ['DELETE', _key, '/v', name, '/f'],
-            result.stderr.toString(),
-            result.exitCode,
-          );
-        }
+        await _delete(name);
       } else {
         await _set(name, value['type'] as String, value['data'] as String);
       }
@@ -64,6 +66,20 @@ final class WindowsProxyBackend extends CommandProxyBackend {
     'reg.exe',
     ['ADD', _key, '/v', name, '/t', type, '/d', data, '/f'],
   ).then((_) {});
+
+  Future<void> _delete(String name) async {
+    final arguments = ['DELETE', _key, '/v', name, '/f'];
+    final result = await run('reg.exe', arguments);
+    if (result.exitCode != 0 &&
+        !result.stderr.toString().toLowerCase().contains('unable to find')) {
+      throw ProcessException(
+        'reg.exe',
+        arguments,
+        result.stderr.toString(),
+        result.exitCode,
+      );
+    }
+  }
 
   static Map<String, Object?> _parseRegistryValue(String output, String name) {
     for (final line in output.split('\n')) {

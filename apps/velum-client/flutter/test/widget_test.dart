@@ -16,6 +16,8 @@ void main() {
     expect(find.text('Overview'), findsAtLeastNWidgets(1));
     expect(find.text('OFFLINE'), findsOneWidget);
     expect(find.text('CONFIGURE'), findsOneWidget);
+    expect(find.text('Traffic routing'), findsOneWidget);
+    expect(find.text('Proxy'), findsOneWidget);
   });
 
   testWidgets('switches between overview, config, and settings', (
@@ -33,6 +35,15 @@ void main() {
       find.text('This local client does not require an account.'),
       findsOneWidget,
     );
+    expect(find.text('Adapter options'), findsOneWidget);
+    await tester.scrollUntilVisible(
+      find.byKey(const ValueKey('routing-rules')),
+      300,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.pump();
+    expect(find.text('Desktop proxy rules'), findsOneWidget);
+    expect(find.byKey(const ValueKey('routing-rules')), findsOneWidget);
   });
 
   testWidgets('adds a node and makes it the active connection node', (
@@ -139,7 +150,7 @@ void main() {
       controller.start(testRuntimeConfiguration());
 
       await tester.pumpWidget(VelumClientApp(controller: controller));
-      expect(find.text('CONNECTING'), findsOneWidget);
+      expect(find.text('CONNECTING'), findsAtLeastNWidgets(1));
       expect(find.text('STOP'), findsOneWidget);
 
       await tester.tap(find.text('STOP'));

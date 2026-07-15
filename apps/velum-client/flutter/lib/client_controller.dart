@@ -3,11 +3,12 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 
 import 'native_client.dart';
+import 'traffic_runtime.dart';
 
 typedef ClientRuntimeFactory = ClientRuntimeBridge Function(String libraryPath);
 
 /// Owns the native runtime handle and exposes only authoritative snapshots.
-class ClientController extends ChangeNotifier {
+class ClientController extends ChangeNotifier implements TrafficRuntime {
   ClientController({
     ClientRuntimeFactory? runtimeFactory,
     this.pollInterval = const Duration(milliseconds: 200),
@@ -25,6 +26,7 @@ class ClientController extends ChangeNotifier {
   bool _disposed = false;
   Object? _pollingError;
 
+  @override
   ClientRuntimeSnapshot get snapshot => _snapshot;
 
   Object? get pollingError => _pollingError;
@@ -50,7 +52,11 @@ class ClientController extends ChangeNotifier {
     return generation;
   }
 
-  int startLoopbackProxy({int requestedPort = 0}) {
+  @override
+  int startLoopbackProxy({
+    int requestedPort = 0,
+    String routingRules = 'MATCH,PROXY',
+  }) {
     _ensureActive();
     final runtime = _runtime;
     if (runtime == null || runtime is! ClientProxyBridge) {
@@ -58,15 +64,18 @@ class ClientController extends ChangeNotifier {
     }
     return (runtime as ClientProxyBridge).startLoopbackProxy(
       requestedPort: requestedPort,
+      routingRules: routingRules,
     );
   }
 
+  @override
   void stopLoopbackProxy() {
     if (_runtime case final ClientProxyBridge runtime) {
       runtime.stopLoopbackProxy();
     }
   }
 
+  @override
   int runtimeHandleForTun() {
     _ensureActive();
     final runtime = _runtime;

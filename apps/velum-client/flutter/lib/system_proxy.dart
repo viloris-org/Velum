@@ -6,7 +6,8 @@ import 'system_proxy_linux.dart';
 import 'system_proxy_macos.dart';
 import 'system_proxy_windows.dart';
 
-export 'system_proxy_contract.dart' show ProxyBackend, ProxySnapshot;
+export 'system_proxy_contract.dart'
+    show ProxyBackend, ProxySnapshot, SystemProxyOptions;
 
 /// Restorable desktop system-proxy lifecycle.
 class SystemProxy {
@@ -18,19 +19,30 @@ class SystemProxy {
   final ProxyBackupStore _store;
   Future<void> _pending = Future.value();
 
-  Future<void> enable(int port) => _serialize(() => _enable(port));
+  Future<void> enable(
+    int port, {
+    List<String> bypassHosts = const ['localhost', '127.0.0.1', '::1'],
+  }) => _serialize(() => _enable(port, bypassHosts));
 
-  Future<void> _enable(int port) async {
+  Future<void> _enable(int port, List<String> bypassHosts) async {
     if (port < 1 || port > 65535) throw ArgumentError.value(port, 'port');
+    if (bypassHosts.any((host) => host.trim().isEmpty)) {
+      throw ArgumentError.value(bypassHosts, 'bypassHosts');
+    }
 
     await _restorePending();
-    final snapshot = await _backend.capture();
-    await _store.write(snapshot);
+    final original = await _backend.capture();
+    await _store.write(_recoverySnapshot(original));
     try {
-      await _backend.enable(port);
+      await _backend.enable(
+        port,
+        bypassHosts: List<String>.unmodifiable(bypassHosts),
+      );
+      final applied = await _backend.capture();
+      await _store.write(_recoverySnapshot(original, applied: applied));
     } on Object {
       try {
-        await _backend.restore(snapshot);
+        await _backend.restore(original);
         await _store.clear();
       } on Object {
         // Preserve the backup so the next launch can retry recovery.
@@ -56,9 +68,30 @@ class SystemProxy {
     if (snapshot.backend != _backend.id) {
       throw StateError('System proxy backup belongs to ${snapshot.backend}.');
     }
-    await _backend.restore(snapshot);
+    final originalValues = snapshot.values['original'];
+    final original = originalValues is Map<String, Object?>
+        ? ProxySnapshot(backend: snapshot.backend, values: originalValues)
+        : snapshot;
+    final appliedValues = snapshot.values['applied'];
+    if (appliedValues is Map<String, Object?>) {
+      final current = await _backend.capture();
+      if (!_deepEquals(current.values, appliedValues)) {
+        throw StateError(
+          'System proxy changed outside Velum; original settings were not overwritten.',
+        );
+      }
+    }
+    await _backend.restore(original);
     await _store.clear();
   }
+
+  ProxySnapshot _recoverySnapshot(
+    ProxySnapshot original, {
+    ProxySnapshot? applied,
+  }) => ProxySnapshot(
+    backend: original.backend,
+    values: {'original': original.values, 'applied': applied?.values},
+  );
 
   static ProxyBackend _platformBackend() {
     if (Platform.isLinux) return LinuxProxyBackend();
@@ -66,6 +99,25 @@ class SystemProxy {
     if (Platform.isWindows) return WindowsProxyBackend();
     throw UnsupportedError('System proxy is not supported on this platform.');
   }
+}
+
+bool _deepEquals(Object? left, Object? right) {
+  if (left is Map && right is Map) {
+    if (left.length != right.length) return false;
+    return left.entries.every(
+      (entry) =>
+          right.containsKey(entry.key) &&
+          _deepEquals(entry.value, right[entry.key]),
+    );
+  }
+  if (left is List && right is List) {
+    if (left.length != right.length) return false;
+    for (var index = 0; index < left.length; index++) {
+      if (!_deepEquals(left[index], right[index])) return false;
+    }
+    return true;
+  }
+  return left == right;
 }
 
 abstract interface class ProxyBackupStore {

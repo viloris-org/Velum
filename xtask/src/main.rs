@@ -22,6 +22,7 @@ fn run() -> Result<(), String> {
         Some("architecture") => architecture::check(&root),
         Some("docs") => docs::check(&root),
         Some("test") => process::test_all(&root),
+        Some("client-test") => process::client_test(&root),
         Some("model-check") => process::model_check(&root),
         Some("ci-metrics") => {
             let input = args
@@ -36,7 +37,9 @@ fn run() -> Result<(), String> {
             ci_metrics::evaluate_files(&root.join(input), &root.join(output))
         }
         Some(command) => Err(format!("unknown xtask command: {command}")),
-        None => Err("usage: cargo xtask <architecture|docs|test|model-check|ci-metrics>".into()),
+        None => Err(
+            "usage: cargo xtask <architecture|docs|test|client-test|model-check|ci-metrics>".into(),
+        ),
     }
 }
 
