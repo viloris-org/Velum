@@ -3,7 +3,7 @@
 use std::{
     fs::{self, OpenOptions},
     io::Write,
-    net::SocketAddr,
+    net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
 };
 
@@ -43,9 +43,16 @@ pub fn command(action: &str, arguments: &[String]) -> Result<(), String> {
 }
 
 pub fn interactive_issue(config_path: &Path) -> Result<(), String> {
+    interactive_issue_with_suggested_relay(config_path, None)
+}
+
+pub(crate) fn interactive_issue_with_suggested_relay(
+    config_path: &Path,
+    detected_public_ip: Option<IpAddr>,
+) -> Result<(), String> {
     let config = config::read(config_path)?;
     let client_name = prompt_required("Client device name", None)?;
-    let suggested_relay = suggested_relay(&config.listener.bind);
+    let suggested_relay = suggested_relay(&config.listener.bind, detected_public_ip);
     let relay = prompt_required("Client-reachable relay IP:PORT", suggested_relay.as_deref())?;
     let relay_address = parse_relay(&relay)?;
     let suggested_name = config
@@ -410,9 +417,12 @@ fn parse_relay(value: &str) -> Result<SocketAddr, String> {
     Ok(address)
 }
 
-fn suggested_relay(bind: &str) -> Option<String> {
-    let address = bind.parse::<SocketAddr>().ok()?;
-    (!address.ip().is_unspecified()).then(|| address.to_string())
+fn suggested_relay(bind: &str, detected_public_ip: Option<IpAddr>) -> Option<String> {
+    let listener = bind.parse::<SocketAddr>().ok()?;
+    detected_public_ip
+        .filter(|address| !address.is_unspecified())
+        .map(|address| SocketAddr::new(address, listener.port()).to_string())
+        .or_else(|| (!listener.ip().is_unspecified()).then(|| listener.to_string()))
 }
 
 fn next(arguments: &[String], index: &mut usize, flag: &str) -> Result<String, String> {
@@ -453,6 +463,20 @@ mod tests {
         ]
         .map(str::to_owned);
         assert!(parse_issue(&arguments).is_err());
+    }
+
+    #[test]
+    fn public_ip_detection_is_used_only_as_a_safe_relay_default() {
+        let detected = Some("198.51.100.42".parse().expect("public address"));
+        assert_eq!(
+            suggested_relay("0.0.0.0:52877", detected),
+            Some("198.51.100.42:52877".into())
+        );
+        assert_eq!(
+            suggested_relay("203.0.113.10:52877", None),
+            Some("203.0.113.10:52877".into())
+        );
+        assert_eq!(suggested_relay("0.0.0.0:52877", None), None);
     }
 
     #[test]

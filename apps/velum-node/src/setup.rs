@@ -57,7 +57,14 @@ pub async fn run(path: PathBuf) -> Result<(), String> {
     }
     println!("Guided setup completed successfully.");
     if prompt_yes_no("Create a client enrollment now", true)? {
-        enrollment::interactive_issue(&path)?;
+        let detected_public_ip = crate::public_ip::detect().await;
+        match detected_public_ip {
+            Some(address) => println!("Detected public relay IP from IPinfo: {address}"),
+            None => println!(
+                "Could not detect a public relay IP. Enter the client-reachable IP address manually."
+            ),
+        }
+        enrollment::interactive_issue_with_suggested_relay(&path, detected_public_ip)?;
     }
     println!("Next: validate the configuration, then start or deploy the relay.");
     Ok(())

@@ -30,6 +30,7 @@ mod datagram;
 pub mod deployment;
 pub mod enrollment;
 mod listener;
+mod public_ip;
 mod setup;
 mod terminal;
 mod uninstall;
