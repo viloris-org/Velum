@@ -25,8 +25,10 @@ Build the core from the workspace:
 cargo build -p velum-client-ffi --release
 ```
 
-In Flutter, set **Native client library** to the resulting platform library,
-then import a native-validated Velum profile or enter relay details manually.
+The application loads its packaged native library. Desktop development builds
+can set `VELUM_CLIENT_LIBRARY` at build time to use the resulting platform
+library, then import a native-validated Velum profile or enter relay details
+manually.
 Imported profiles contain only `secret://velum/` references; credential and CA
 bytes resolve from platform secure storage. Legacy file fields migrate those
 bytes into secure storage. Flutter copies connection bytes only for the direct native call and does not

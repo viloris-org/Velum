@@ -30,6 +30,7 @@ void main() {
     expect(find.text('Connection configuration'), findsOneWidget);
     expect(find.byKey(const ValueKey('import-enrollment')), findsOneWidget);
     expect(find.byKey(const ValueKey('scan-enrollment')), findsNothing);
+    expect(find.text('Native client library'), findsNothing);
 
     await tester.tap(find.text('Settings'));
     await tester.pump();

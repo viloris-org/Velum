@@ -66,7 +66,6 @@ class ClientConfigurationPanel extends StatelessWidget {
     required this.onRemoveNode,
     required this.onSelectNode,
     required this.onTrustModeChanged,
-    required this.library,
     required this.profileFile,
     required this.onImportProfile,
     required this.onImportEnrollment,
@@ -83,7 +82,6 @@ class ClientConfigurationPanel extends StatelessWidget {
   final ValueChanged<int> onRemoveNode;
   final ValueChanged<int> onSelectNode;
   final void Function(RelayNodeDraft, ClientTrustMode) onTrustModeChanged;
-  final TextEditingController library;
   final TextEditingController profileFile;
   final Future<void> Function() onImportProfile;
   final Future<void> Function() onImportEnrollment;
@@ -177,15 +175,6 @@ class ClientConfigurationPanel extends StatelessWidget {
             icon: const Icon(Icons.add_outlined),
             label: const Text('Add node'),
           ),
-          const SizedBox(height: 20),
-          ClientPanel(
-            child: _field(
-              library,
-              'Native client library',
-              'Path to libvelum_client_ffi for this desktop platform',
-            ),
-          ),
-          const SizedBox(height: 16),
           const Text(
             'Experimental Stage 2 direct client API. It is not a production VPN and supports IP-address targets only.',
             style: TextStyle(color: ClientTheme.warning, fontSize: 12),

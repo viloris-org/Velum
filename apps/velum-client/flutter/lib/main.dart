@@ -50,9 +50,6 @@ class ClientHome extends StatefulWidget {
 
 class _ClientHomeState extends State<ClientHome> {
   final _formKey = GlobalKey<FormState>();
-  final _library = TextEditingController(
-    text: NativeClientRuntime.defaultLibraryName(),
-  );
   final _profileFile = TextEditingController();
   final _nodes = <RelayNodeDraft>[
     RelayNodeDraft(
@@ -86,7 +83,7 @@ class _ClientHomeState extends State<ClientHome> {
     _clientController = widget.controller ?? ClientController();
     _trafficController = TrafficModeController.platform(
       runtime: _clientController,
-      libraryPath: () => _library.text.trim(),
+      libraryPath: NativeClientRuntime.libraryPath,
       systemProxyOptions: _trafficConfiguration.systemProxyOptions,
       tunOptions: _trafficConfiguration.tunOptions,
       routingRules: () => _trafficConfiguration.routingRules().serialize(),
@@ -105,7 +102,6 @@ class _ClientHomeState extends State<ClientHome> {
     _trafficController.dispose();
     _clientController.removeListener(_handleControllerChanged);
     _clientController.dispose();
-    _library.dispose();
     _profileFile.dispose();
     _trafficConfiguration.dispose();
     for (final node in _nodes) {
@@ -167,7 +163,6 @@ class _ClientHomeState extends State<ClientHome> {
   }
 
   bool get _hasCompleteConfiguration => [
-    _library.text,
     _activeNode.id.text,
     _activeNode.relayAddress.text,
     _activeNode.serverName.text,
@@ -198,7 +193,7 @@ class _ClientHomeState extends State<ClientHome> {
             migrationFile: _activeNode.certificatePath.text,
           );
     return ClientRuntimeConfiguration(
-      libraryPath: _library.text.trim(),
+      libraryPath: NativeClientRuntime.libraryPath(),
       relayAddress: _activeNode.relayAddress.text.trim(),
       serverName: _activeNode.serverName.text.trim(),
       credential: credential,
@@ -214,7 +209,7 @@ class _ClientHomeState extends State<ClientHome> {
       return;
     }
     try {
-      final codec = NativeProfileCodec.open(_library.text.trim());
+      final codec = NativeProfileCodec.open(NativeClientRuntime.libraryPath());
       final profile = await _profileRepository.importFile(
         sourcePath,
         codec.normalize,
@@ -257,7 +252,6 @@ class _ClientHomeState extends State<ClientHome> {
     const enrollmentType = XTypeGroup(
       label: 'Velum enrollment',
       extensions: ['velum-enroll'],
-      mimeTypes: ['application/json'],
     );
     try {
       final selected = await openFile(
@@ -311,7 +305,7 @@ class _ClientHomeState extends State<ClientHome> {
   }
 
   Future<bool> _installEnrollment(String source) async {
-    final codec = NativeEnrollmentCodec.open(_library.text.trim());
+    final codec = NativeEnrollmentCodec.open(NativeClientRuntime.libraryPath());
     final enrollment = ClientEnrollment.parseCanonical(codec.normalize(source));
     final certificate = enrollment.certificatePem == null
         ? null
@@ -559,7 +553,6 @@ class _ClientHomeState extends State<ClientHome> {
         onRemoveNode: _removeNode,
         onSelectNode: _selectActiveNode,
         onTrustModeChanged: _changeTrustMode,
-        library: _library,
         profileFile: _profileFile,
         onImportProfile: _importProfile,
         onImportEnrollment: _importEnrollmentFile,

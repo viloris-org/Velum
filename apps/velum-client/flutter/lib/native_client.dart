@@ -341,6 +341,13 @@ class NativeClientRuntime
     return 'libvelum_client_ffi.so';
   }
 
+  /// The native runtime is packaged with the application. Desktop development
+  /// builds can supply an explicit artifact path at compile time.
+  static String libraryPath() {
+    const configured = String.fromEnvironment('VELUM_CLIENT_LIBRARY');
+    return configured.isEmpty ? defaultLibraryName() : configured;
+  }
+
   static NativeClientRuntime open(String libraryPath) {
     final library = DynamicLibrary.open(libraryPath);
     final abiVersion = library
