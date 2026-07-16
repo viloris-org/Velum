@@ -1881,7 +1881,7 @@ dependencies = [
 
 [[package]]
 name = "velum-node"
-version = "0.0.1-beta-3"
+version = "0.0.1-beta-4"
 dependencies = [
  "getrandom 0.3.4",
  "qrcode",
