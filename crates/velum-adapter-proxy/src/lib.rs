@@ -22,12 +22,21 @@ use tokio::{
     sync::watch,
     task::JoinHandle,
 };
-use velum_client_runtime::{ClientRuntime, RuntimeReceiveStream, RuntimeSendStream};
+use velum_client_engine::NodePool;
+use velum_client_runtime::{
+    ClientRuntime, RuntimePhase, RuntimeReceiveStream, RuntimeSendStream, RuntimeStream,
+};
 
 use crate::{http::parse_forward_request, target::ProxyTarget};
 
 const MAX_HANDSHAKE_BYTES: usize = 16 * 1024;
 const COPY_BUFFER_BYTES: usize = 16 * 1024;
+
+#[derive(Clone)]
+enum ProxyRuntime {
+    Single(Arc<ClientRuntime>),
+    Pool(Arc<NodePool>),
+}
 
 /// A running loopback proxy. Dropping it shuts down its listener and clients.
 pub struct ProxyAdapter {
@@ -48,10 +57,28 @@ impl ProxyAdapter {
         port: u16,
         policy: RoutingPolicy,
     ) -> io::Result<Self> {
-        if !runtime.is_generation_online(runtime.snapshot().generation) {
+        Self::start_with_source(ProxyRuntime::Single(runtime), port, policy).await
+    }
+
+    /// Binds a listener backed by the multi-node engine. `PROXY` routes use
+    /// the pool default node; `NODE` rules lazily start their selected node.
+    pub async fn start_with_pool_policy(
+        pool: Arc<NodePool>,
+        port: u16,
+        policy: RoutingPolicy,
+    ) -> io::Result<Self> {
+        Self::start_with_source(ProxyRuntime::Pool(pool), port, policy).await
+    }
+
+    async fn start_with_source(
+        runtime: ProxyRuntime,
+        port: u16,
+        policy: RoutingPolicy,
+    ) -> io::Result<Self> {
+        if !runtime.is_default_online().await {
             return Err(io::Error::new(
                 io::ErrorKind::NotConnected,
-                "runtime is not online",
+                "default runtime is not online",
             ));
         }
         let ipv4 = TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, port))).await?;
@@ -87,7 +114,7 @@ impl ProxyAdapter {
         let listener = TcpListener::bind(address).await?;
         let address = listener.local_addr()?;
         Ok(Self::from_listeners(
-            runtime,
+            ProxyRuntime::Single(runtime),
             address,
             policy,
             vec![listener],
@@ -95,7 +122,7 @@ impl ProxyAdapter {
     }
 
     fn from_listeners(
-        runtime: Arc<ClientRuntime>,
+        runtime: ProxyRuntime,
         address: SocketAddr,
         policy: RoutingPolicy,
         listeners: Vec<TcpListener>,
@@ -105,7 +132,7 @@ impl ProxyAdapter {
         let task = tokio::spawn(async move {
             let mut tasks = Vec::with_capacity(listeners.len());
             for listener in listeners {
-                let runtime = Arc::clone(&runtime);
+                let runtime = runtime.clone();
                 let policy = Arc::clone(&policy);
                 let mut stopped = stopped.clone();
                 tasks.push(tokio::spawn(async move {
@@ -116,7 +143,7 @@ impl ProxyAdapter {
                             }
                             accepted = listener.accept() => match accepted {
                                 Ok((stream, _)) => {
-                                    let runtime = Arc::clone(&runtime);
+                                    let runtime = runtime.clone();
                                     let policy = Arc::clone(&policy);
                                     tokio::spawn(async move {
                                         let _ = serve(stream, runtime, policy).await;
@@ -160,7 +187,7 @@ impl Drop for ProxyAdapter {
 
 async fn serve(
     mut local: TcpStream,
-    runtime: Arc<ClientRuntime>,
+    runtime: ProxyRuntime,
     policy: Arc<RoutingPolicy>,
 ) -> io::Result<()> {
     let request = read_request(&mut local).await?;
@@ -180,7 +207,9 @@ async fn serve(
             }
             relay_direct(local, remote).await
         }
-        RoutingAction::Proxy => relay_proxy(local, runtime, target, request.protocol).await,
+        RoutingAction::Proxy => {
+            relay_proxy(local, runtime, "PROXY", target, request.protocol).await
+        }
         RoutingAction::Reject => {
             write_rejected(&mut local, &request.protocol).await?;
             Err(io::Error::new(
@@ -188,35 +217,72 @@ async fn serve(
                 "proxy request rejected by routing policy",
             ))
         }
-        RoutingAction::Node(_) => {
-            write_rejected(&mut local, &request.protocol).await?;
-            Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "explicit node routing requires client engine ABI v3",
-            ))
+        RoutingAction::Node(node) => {
+            relay_proxy(local, runtime, &node, target, request.protocol).await
         }
     }
 }
 
 async fn relay_proxy(
-    mut local: TcpStream,
-    runtime: Arc<ClientRuntime>,
+    local: TcpStream,
+    runtime: ProxyRuntime,
+    reference: &str,
     target: SocketAddr,
     protocol: ConnectProtocol,
 ) -> io::Result<()> {
-    let stream = runtime.open_stream(target).await.map_err(runtime_error)?;
-    let (generation, mut send, receive) = stream.into_parts();
-    if !runtime.is_generation_online(generation) {
-        return Err(io::Error::new(
-            io::ErrorKind::NotConnected,
-            "runtime generation ended",
-        ));
+    let stream = match runtime {
+        ProxyRuntime::Single(runtime) if reference == "PROXY" => {
+            let stream = runtime.open_stream(target).await.map_err(runtime_error)?;
+            if !runtime.is_generation_online(stream.generation()) {
+                return Err(io::Error::new(
+                    io::ErrorKind::NotConnected,
+                    "runtime generation ended",
+                ));
+            }
+            stream
+        }
+        ProxyRuntime::Single(_) => {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "explicit node routing requires a multi-node engine",
+            ));
+        }
+        ProxyRuntime::Pool(pool) => pool
+            .open_stream(reference, target)
+            .await
+            .map_err(runtime_error)?,
+    };
+    relay_stream(local, stream, protocol).await
+}
+
+impl ProxyRuntime {
+    async fn is_default_online(&self) -> bool {
+        match self {
+            Self::Single(runtime) => runtime.is_generation_online(runtime.snapshot().generation),
+            Self::Pool(pool) => pool
+                .snapshot()
+                .await
+                .nodes
+                .iter()
+                .find(|node| node.is_default)
+                .and_then(|node| node.runtime.as_ref())
+                .is_some_and(|snapshot| snapshot.phase == RuntimePhase::Online),
+        }
     }
+}
+
+async fn relay_stream(
+    mut local: TcpStream,
+    stream: RuntimeStream,
+    protocol: ConnectProtocol,
+) -> io::Result<()> {
+    let (_, mut send, receive) = stream.into_parts();
     write_success(&mut local, &protocol).await?;
     if let Some(head) = protocol.forward_head() {
         send.write_all(head).await.map_err(runtime_error)?;
     }
-    relay(local, send, receive).await
+    let (reader, writer) = local.into_split();
+    relay_halves(reader, writer, send, receive).await
 }
 
 async fn relay_direct(mut local: TcpStream, mut remote: TcpStream) -> io::Result<()> {
@@ -224,12 +290,12 @@ async fn relay_direct(mut local: TcpStream, mut remote: TcpStream) -> io::Result
     Ok(())
 }
 
-async fn relay(
-    local: TcpStream,
+async fn relay_halves(
+    mut reader: tokio::net::tcp::OwnedReadHalf,
+    mut writer: tokio::net::tcp::OwnedWriteHalf,
     mut send: RuntimeSendStream,
     mut receive: RuntimeReceiveStream,
 ) -> io::Result<()> {
-    let (mut reader, mut writer) = local.into_split();
     let upstream = tokio::spawn(async move {
         let mut buffer = [0_u8; COPY_BUFFER_BYTES];
         loop {

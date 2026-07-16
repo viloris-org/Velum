@@ -198,7 +198,7 @@ modules:
   adapters:
     paths: ["crates/velum-adapter-*/**"]
     owner: client-maintainers
-    may_depend_on: [client-runtime, client-routing, session, telemetry]
+    may_depend_on: [client-runtime, client-engine, client-routing, session, telemetry]
     public_api:
       - "crates/velum-adapter-proxy/src/lib.rs"
       - "crates/velum-adapter-tun/src/lib.rs"

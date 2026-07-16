@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 
 import 'android_vpn.dart';
 import 'client_controller.dart';
+import 'client_engine_controller.dart';
 import 'desktop_tun.dart';
 import 'native_client.dart';
 import 'system_proxy.dart';
@@ -200,6 +201,34 @@ final class TrafficModeController extends ChangeNotifier {
       );
     }
     return TrafficModeController(runtime: runtime, adapters: adapters);
+  }
+
+  /// Desktop traffic integration for the native multi-node engine.
+  ///
+  /// A multi-node engine has no stable single-runtime TUN handle, so this
+  /// deliberately exposes only the loopback system-proxy adapter.
+  factory TrafficModeController.desktopEngine({
+    required ClientEngineController runtime,
+    SystemProxy? systemProxy,
+    SystemProxyOptions Function()? systemProxyOptions,
+    String Function()? routingRules,
+  }) {
+    if (!(Platform.isLinux || Platform.isMacOS || Platform.isWindows)) {
+      throw UnsupportedError(
+        'The native multi-node traffic controller is desktop-only.',
+      );
+    }
+    return TrafficModeController(
+      runtime: runtime,
+      adapters: [
+        DesktopSystemProxyAdapter(
+          runtime,
+          systemProxy ?? SystemProxy(),
+          options: systemProxyOptions,
+          routingRules: routingRules,
+        ),
+      ],
+    );
   }
 
   final TrafficRuntime _runtime;

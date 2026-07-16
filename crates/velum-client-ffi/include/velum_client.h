@@ -81,6 +81,12 @@ typedef struct VelumClientConfigInput {
     uint32_t trust_mode;
 } VelumClientConfigInput;
 
+typedef struct VelumEngineNodeInput {
+    VelumByteSlice id;
+    VelumByteSlice alias;
+    VelumClientConfigInput configuration;
+} VelumEngineNodeInput;
+
 typedef struct VelumRuntimeSnapshotV1 {
     uint64_t revision;
     uint64_t generation;
@@ -88,10 +94,18 @@ typedef struct VelumRuntimeSnapshotV1 {
     uint32_t failure;
 } VelumRuntimeSnapshotV1;
 
+typedef struct VelumEngineNodeSnapshotV1 {
+    uint64_t profile_generation;
+    uint32_t configured;
+    uint32_t is_default;
+    VelumRuntimeSnapshotV1 runtime;
+} VelumEngineNodeSnapshotV1;
+
 uint16_t velum_client_abi_version(void);
 uint16_t velum_client_runtime_abi_version(void);
 uint16_t velum_client_profile_abi_version(void);
 uint16_t velum_client_enrollment_abi_version(void);
+uint16_t velum_client_engine_abi_version(void);
 
 VelumProfileStatus velum_client_profile_validate_v1(
     VelumByteSlice input,
@@ -107,6 +121,28 @@ VelumProfileStatus velum_client_enrollment_normalize_v1(
     VelumByteSlice input,
     VelumMutableByteSlice output,
     size_t *out_written);
+
+VelumControlStatus velum_client_engine_create(uint64_t *out_engine_handle);
+VelumControlStatus velum_client_engine_activate_v1(
+    uint64_t engine_handle,
+    const VelumEngineNodeInput *nodes,
+    size_t node_count,
+    VelumByteSlice default_node,
+    uint64_t *out_generation);
+VelumControlStatus velum_client_engine_node_snapshot_v1(
+    uint64_t engine_handle,
+    VelumByteSlice reference,
+    VelumEngineNodeSnapshotV1 *out_snapshot);
+VelumControlStatus velum_client_engine_stop(
+    uint64_t engine_handle,
+    uint64_t *out_generation);
+VelumControlStatus velum_client_engine_destroy(uint64_t engine_handle);
+VelumControlStatus velum_client_engine_proxy_start_v1(
+    uint64_t engine_handle,
+    uint16_t requested_port,
+    VelumByteSlice rules,
+    uint16_t *out_port);
+VelumControlStatus velum_client_engine_proxy_stop(uint64_t engine_handle);
 
 VelumStatus velum_client_connect(
     const VelumClientConfigInput *input,

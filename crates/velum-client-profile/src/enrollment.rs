@@ -36,7 +36,10 @@ pub struct EnrollmentNode {
 #[serde(tag = "mode", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum EnrollmentTrust {
     System,
-    CustomCa { certificate_pem: String },
+    CustomCa {
+        #[serde(rename = "certificate-pem", alias = "certificate_pem")]
+        certificate_pem: String,
+    },
 }
 
 impl EnrollmentBundle {
@@ -205,6 +208,29 @@ mod tests {
                 .expect_err("oversize")
                 .kind(),
             super::super::ProfileErrorKind::Limit
+        );
+    }
+
+    #[test]
+    fn canonical_custom_ca_uses_kebab_case_and_accepts_legacy_underscore_case() {
+        let bundle = EnrollmentBundle::new(
+            bundle().node,
+            8,
+            &[7; 32],
+            EnrollmentTrust::CustomCa {
+                certificate_pem: "-----BEGIN CERTIFICATE-----\nAA==\n-----END CERTIFICATE-----\n"
+                    .into(),
+            },
+        )
+        .expect("valid custom CA enrollment");
+        let canonical = bundle.to_canonical_json().expect("canonical JSON");
+
+        assert!(canonical.contains("\"certificate-pem\""));
+        assert!(!canonical.contains("\"certificate_pem\""));
+        let legacy = canonical.replace("certificate-pem", "certificate_pem");
+        assert_eq!(
+            EnrollmentBundle::from_json(legacy.as_bytes()).expect("legacy enrollment"),
+            bundle
         );
     }
 }

@@ -75,6 +75,19 @@ mode.
 - `cargo xtask architecture`, the client crate tests, and the current Flutter
   widget test pass, but no Flutter-to-relay live-flow test exists.
 
+### Capability-Driven UI Evolution
+
+[ADR-0021](adr/0021-native-client-capability-and-ui-evolution.md) adds the UI
+delivery rule for the profile and routing evolution in ADR-0019. Flutter may
+render only a capability that a versioned native owner exposes; it must not
+recreate routing, DNS, connection lifecycle, or secret storage policy in Dart.
+
+The target navigation is Overview, Nodes and profiles, Traffic, and Settings.
+It is an information-architecture reference, not a promise to support the
+configuration surface of another proxy implementation. `velum-client-engine`
+is the first prerequisite: it owns profile generations and node runtime pool
+behavior while remaining independent of YAML parsing.
+
 ### Assumptions
 
 - A shared Rust lifecycle runtime reduces platform-specific state divergence.
@@ -354,6 +367,18 @@ reference environments and thresholds are recorded.
 - Move credential material into platform secure storage before claiming support.
 - Require every shipped consumer to pass ABI v2 control and live-flow gates
   before declaring platform support.
+
+### Slice 5: Capability-Driven Client UI
+
+- Implement the engine tracer slice before adding profile or node-management
+  controls to Flutter.
+- Expose native capability and node snapshots as read-only UI state, then add
+  each editable control only with its versioned native command and integration
+  test.
+- Group platform traffic behavior under Traffic and application-only behavior
+  under Settings; omit unsupported platform and protocol options.
+- Roll back a UI slice by removing its entry point while retaining the prior
+  native runtime and profile contracts.
 
 ## Invalidation And Review Triggers
 

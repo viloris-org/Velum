@@ -4,7 +4,9 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:velum_client/android_vpn.dart';
 import 'package:velum_client/desktop_tun.dart';
+import 'package:velum_client/client_engine_controller.dart';
 import 'package:velum_client/native_client.dart';
+import 'package:velum_client/native_engine.dart';
 import 'package:velum_client/system_proxy.dart';
 import 'package:velum_client/traffic_mode_controller.dart';
 import 'package:velum_client/traffic_runtime.dart';
@@ -163,6 +165,21 @@ void main() {
 
     expect(host.events, ['recover', 'start:1:1:1280', 'stop']);
   });
+
+  test('desktop engine traffic mode exposes system proxy without TUN', () {
+    final runtime = ClientEngineController(engineFactory: (_) => _EngineStub());
+    final controller = TrafficModeController.desktopEngine(
+      runtime: runtime,
+      systemProxy: SystemProxy(backend: _ProxyBackend(), store: _ProxyStore()),
+    );
+
+    expect(controller.availableModes, {
+      TrafficMode.off,
+      TrafficMode.systemProxy,
+    });
+    controller.dispose();
+    runtime.dispose();
+  });
 }
 
 Future<void> _flushAsync() async {
@@ -293,4 +310,35 @@ final class _DesktopHost implements DesktopTunControl {
 
   @override
   Future<void> stop() async => events.add('stop');
+}
+
+final class _EngineStub implements ClientEngineBridge {
+  @override
+  int activate(
+    List<ClientEngineNodeConfiguration> nodes, {
+    required String defaultNode,
+  }) => 1;
+
+  @override
+  void destroy() {}
+
+  @override
+  ClientEngineNodeSnapshot nodeSnapshot(String reference) =>
+      const ClientEngineNodeSnapshot(
+        profileGeneration: 0,
+        isDefault: false,
+        runtime: ClientRuntimeSnapshot.stopped(),
+      );
+
+  @override
+  int startLoopbackProxy({
+    int requestedPort = 0,
+    String routingRules = 'MATCH,PROXY',
+  }) => requestedPort;
+
+  @override
+  void stopLoopbackProxy() {}
+
+  @override
+  int stop() => 0;
 }

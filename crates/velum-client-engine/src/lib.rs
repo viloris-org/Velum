@@ -17,13 +17,13 @@ use std::{
 
 use tokio::sync::{Mutex, RwLock};
 use velum_client_runtime::{
-    ClientConfig, ClientRuntime, RuntimeError, RuntimePhase, RuntimeStream,
+    ClientConfig, ClientRuntime, RuntimeError, RuntimeSnapshot, RuntimeStream,
 };
 
 type StartFuture =
     Pin<Box<dyn Future<Output = Result<Arc<ClientRuntime>, NodePoolError>> + Send + 'static>>;
 
-/// Starts one runtime and returns only after it is online.
+/// Accepts one runtime start command and returns after its `Connecting` state is visible.
 pub trait RuntimeFactory: Send + Sync + 'static {
     fn start(&self, configuration: ClientConfig) -> StartFuture;
 }
@@ -36,25 +36,11 @@ impl RuntimeFactory for ClientRuntimeFactory {
     fn start(&self, configuration: ClientConfig) -> StartFuture {
         Box::pin(async move {
             let runtime = Arc::new(ClientRuntime::new());
-            let mut snapshots = runtime.subscribe();
             runtime
                 .start(configuration)
                 .await
                 .map_err(NodePoolError::Runtime)?;
-            loop {
-                let snapshot = *snapshots.borrow_and_update();
-                match snapshot.phase {
-                    RuntimePhase::Online => return Ok(runtime),
-                    RuntimePhase::Failed | RuntimePhase::Stopped => {
-                        return Err(NodePoolError::ConnectionFailed);
-                    }
-                    RuntimePhase::Connecting | RuntimePhase::Stopping => {}
-                }
-                snapshots
-                    .changed()
-                    .await
-                    .map_err(|_| NodePoolError::ConnectionFailed)?;
-            }
+            Ok(runtime)
         })
     }
 }
@@ -67,6 +53,7 @@ pub struct ResolvedNode {
 }
 
 struct NodeEntry {
+    alias: String,
     configuration: ClientConfig,
     runtime: Mutex<Option<Arc<ClientRuntime>>>,
 }
@@ -89,6 +76,25 @@ pub enum NodePoolError {
     Superseded,
     ConnectionFailed,
     Runtime(RuntimeError),
+}
+
+/// Read-only state for one node in the active profile generation.
+///
+/// The snapshot deliberately contains neither credentials nor destination data.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NodeSnapshot {
+    pub id: String,
+    pub alias: String,
+    pub is_default: bool,
+    pub runtime: Option<RuntimeSnapshot>,
+}
+
+/// Read-only state for the active profile generation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NodePoolSnapshot {
+    pub generation: u64,
+    pub default_node: Option<String>,
+    pub nodes: Vec<NodeSnapshot>,
 }
 
 /// A pool of independent runtimes owned by one immutable profile generation.
@@ -149,6 +155,40 @@ impl NodePool {
         self.state.read().await.generation
     }
 
+    /// Returns the active generation and each node's latest runtime snapshot.
+    pub async fn snapshot(&self) -> NodePoolSnapshot {
+        let state = self.state.read().await;
+        let generation = state.generation;
+        let default_node = (!state.default_node.is_empty()).then(|| state.default_node.clone());
+        let entries = state
+            .nodes
+            .iter()
+            .map(|(id, entry)| (id.clone(), Arc::clone(entry)))
+            .collect::<Vec<_>>();
+        drop(state);
+
+        let mut nodes = Vec::with_capacity(entries.len());
+        for (id, entry) in entries {
+            let runtime = entry
+                .runtime
+                .lock()
+                .await
+                .as_ref()
+                .map(|runtime| runtime.snapshot());
+            nodes.push(NodeSnapshot {
+                is_default: default_node.as_deref() == Some(id.as_str()),
+                id,
+                alias: entry.alias.clone(),
+                runtime,
+            });
+        }
+        NodePoolSnapshot {
+            generation,
+            default_node,
+            nodes,
+        }
+    }
+
     /// Resolves an ID or alias and starts that node once for this generation.
     pub async fn runtime_for(&self, reference: &str) -> Result<Arc<ClientRuntime>, NodePoolError> {
         let generation = self.generation().await;
@@ -172,7 +212,7 @@ impl NodePool {
         Ok(stream)
     }
 
-    pub async fn stop(&self) {
+    pub async fn stop(&self) -> u64 {
         let previous = {
             let mut state = self.state.write().await;
             let generation = self.next_generation.fetch_add(1, Ordering::Relaxed);
@@ -185,6 +225,7 @@ impl NodePool {
             )
         };
         Self::stop_state(previous).await;
+        self.generation().await
     }
 
     fn prepare(nodes: Vec<ResolvedNode>, default_node: &str) -> Result<PoolState, NodePoolError> {
@@ -202,10 +243,11 @@ impl NodePool {
             {
                 return Err(NodePoolError::DuplicateNode);
             }
-            aliases.insert(node.alias, node.id.clone());
+            aliases.insert(node.alias.clone(), node.id.clone());
             entries.insert(
                 node.id,
                 Arc::new(NodeEntry {
+                    alias: node.alias,
                     configuration: node.configuration,
                     runtime: Mutex::new(None),
                 }),
@@ -280,7 +322,7 @@ impl NodePool {
 mod tests {
     use std::{sync::atomic::AtomicUsize, time::Duration};
 
-    use velum_client_runtime::ClientTrust;
+    use velum_client_runtime::{ClientTrust, RuntimePhase};
 
     use super::*;
 
@@ -291,6 +333,25 @@ mod tests {
             let starts = Arc::clone(&self.0);
             Box::pin(async move {
                 starts.fetch_add(1, Ordering::Relaxed);
+                Ok(Arc::new(ClientRuntime::new()))
+            })
+        }
+    }
+
+    struct FailOnStartFactory {
+        starts: Arc<AtomicUsize>,
+        failing_start: usize,
+    }
+
+    impl RuntimeFactory for FailOnStartFactory {
+        fn start(&self, _: ClientConfig) -> StartFuture {
+            let starts = Arc::clone(&self.starts);
+            let failing_start = self.failing_start;
+            Box::pin(async move {
+                let start = starts.fetch_add(1, Ordering::Relaxed) + 1;
+                if start == failing_start {
+                    return Err(NodePoolError::ConnectionFailed);
+                }
                 Ok(Arc::new(ClientRuntime::new()))
             })
         }
@@ -343,5 +404,93 @@ mod tests {
             pool.activate(vec![node("one", "primary")], "missing").await,
             Err(NodePoolError::MissingDefault)
         );
+    }
+
+    #[tokio::test]
+    async fn lazy_node_failure_does_not_replace_or_restart_the_default_node() {
+        let starts = Arc::new(AtomicUsize::new(0));
+        let pool = NodePool::new(Arc::new(FailOnStartFactory {
+            starts: Arc::clone(&starts),
+            failing_start: 2,
+        }));
+        pool.activate(
+            vec![node("one", "primary"), node("two", "backup")],
+            "primary",
+        )
+        .await
+        .expect("activate");
+        let default_runtime = pool.runtime_for("PROXY").await.expect("default node");
+
+        assert!(matches!(
+            pool.runtime_for("backup").await,
+            Err(NodePoolError::ConnectionFailed)
+        ));
+        let retained_default = pool.runtime_for("primary").await.expect("default node");
+
+        assert!(Arc::ptr_eq(&default_runtime, &retained_default));
+        assert_eq!(starts.load(Ordering::Relaxed), 2);
+    }
+
+    #[tokio::test]
+    async fn activating_a_new_profile_generation_replaces_the_visible_node_set() {
+        let starts = Arc::new(AtomicUsize::new(0));
+        let pool = NodePool::new(Arc::new(FakeFactory(Arc::clone(&starts))));
+        let first_generation = pool
+            .activate(vec![node("one", "primary")], "primary")
+            .await
+            .expect("first activation");
+        let first_runtime = pool.runtime_for("one").await.expect("first node");
+
+        let second_generation = pool
+            .activate(vec![node("two", "secondary")], "secondary")
+            .await
+            .expect("second activation");
+        let snapshot = pool.snapshot().await;
+
+        assert!(second_generation > first_generation);
+        assert_eq!(snapshot.generation, second_generation);
+        assert_eq!(snapshot.default_node.as_deref(), Some("two"));
+        assert_eq!(snapshot.nodes.len(), 1);
+        assert_eq!(snapshot.nodes[0].id, "two");
+        assert_eq!(snapshot.nodes[0].alias, "secondary");
+        assert!(snapshot.nodes[0].is_default);
+        assert!(snapshot.nodes[0].runtime.is_some());
+        assert!(matches!(
+            pool.runtime_for("one").await,
+            Err(NodePoolError::UnknownNode)
+        ));
+        assert_eq!(first_runtime.snapshot().phase, RuntimePhase::Stopped);
+    }
+
+    #[tokio::test]
+    async fn snapshot_marks_lazy_nodes_without_starting_them() {
+        let starts = Arc::new(AtomicUsize::new(0));
+        let pool = NodePool::new(Arc::new(FakeFactory(Arc::clone(&starts))));
+        pool.activate(
+            vec![node("one", "primary"), node("two", "backup")],
+            "primary",
+        )
+        .await
+        .expect("activate");
+
+        let snapshot = pool.snapshot().await;
+
+        assert_eq!(starts.load(Ordering::Relaxed), 1);
+        assert_eq!(snapshot.nodes.len(), 2);
+        assert!(snapshot.nodes[0].runtime.is_some());
+        assert!(snapshot.nodes[1].runtime.is_none());
+    }
+
+    #[tokio::test]
+    async fn production_factory_returns_after_the_connecting_snapshot_is_published() {
+        let configuration = node("one", "primary").configuration;
+
+        let runtime = ClientRuntimeFactory
+            .start(configuration)
+            .await
+            .expect("start accepted");
+
+        assert_eq!(runtime.snapshot().phase, RuntimePhase::Connecting);
+        runtime.stop().await;
     }
 }

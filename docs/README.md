@@ -59,6 +59,7 @@ questions. Proposed ADRs are not final protocol commitments.
 - [ADR-0018: Desktop privileged traffic host](adr/0018-desktop-privileged-traffic-host.md)
 - [ADR-0019: Profile and routing evolution](adr/0019-profile-and-routing-evolution.md)
 - [ADR-0020: Offline client enrollment](adr/0020-offline-client-enrollment.md)
+- [ADR-0021: Native client capability and UI evolution](adr/0021-native-client-capability-and-ui-evolution.md)
 - [Privileged helper protocol v1](helper-protocol-v1.md)
 - [ADR-0011: Cover-service listener wiring](adr/0011-cover-service-listener-wiring.md)
 

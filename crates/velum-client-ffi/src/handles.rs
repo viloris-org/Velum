@@ -5,6 +5,7 @@ use std::{
 
 use tokio::sync::watch;
 use velum_adapter_proxy::ProxyAdapter;
+use velum_client_engine::NodePool;
 use velum_client_runtime::{ClientRuntime, RuntimeReceiveStream, RuntimeSendStream, RuntimeStream};
 
 pub(crate) struct ClientCommandState {
@@ -15,6 +16,22 @@ pub(crate) struct ClientEntry {
     pub(crate) runtime: Arc<ClientRuntime>,
     pub(crate) command: Mutex<ClientCommandState>,
     pub(crate) proxy: Mutex<Option<ProxyAdapter>>,
+}
+
+pub(crate) struct EngineEntry {
+    pub(crate) pool: Arc<NodePool>,
+    pub(crate) command: Mutex<ClientCommandState>,
+    pub(crate) proxy: Mutex<Option<ProxyAdapter>>,
+}
+
+impl EngineEntry {
+    pub(crate) fn new(pool: Arc<NodePool>) -> Self {
+        Self {
+            pool,
+            command: Mutex::new(ClientCommandState { destroyed: false }),
+            proxy: Mutex::new(None),
+        }
+    }
 }
 
 impl ClientEntry {
@@ -86,6 +103,7 @@ pub(crate) struct HandleTable {
     next_handle: u64,
     pub(crate) clients: BTreeMap<u64, Arc<ClientEntry>>,
     pub(crate) streams: BTreeMap<u64, Arc<StreamEntry>>,
+    pub(crate) engines: BTreeMap<u64, Arc<EngineEntry>>,
 }
 
 impl HandleTable {
@@ -103,6 +121,12 @@ impl HandleTable {
         let handle = self.next()?;
         self.streams
             .insert(handle, Arc::new(StreamEntry::new(client_handle, stream)));
+        Some(handle)
+    }
+
+    pub(crate) fn insert_engine(&mut self, engine: Arc<EngineEntry>) -> Option<u64> {
+        let handle = self.next()?;
+        self.engines.insert(handle, engine);
         Some(handle)
     }
 

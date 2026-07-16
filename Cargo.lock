@@ -1749,6 +1749,7 @@ name = "velum-adapter-proxy"
 version = "0.0.0"
 dependencies = [
  "tokio",
+ "velum-client-engine",
  "velum-client-routing",
  "velum-client-runtime",
 ]
@@ -1819,6 +1820,7 @@ dependencies = [
  "tokio",
  "velum-adapter-proxy",
  "velum-adapter-tun",
+ "velum-client-engine",
  "velum-client-profile",
  "velum-client-runtime",
 ]

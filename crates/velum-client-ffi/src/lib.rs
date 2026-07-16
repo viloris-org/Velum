@@ -8,6 +8,7 @@
 mod abi;
 mod configuration;
 mod control;
+mod engine;
 mod enrollment;
 mod handles;
 mod profile;
@@ -19,6 +20,7 @@ use std::sync::OnceLock;
 
 pub use abi::*;
 pub use control::*;
+pub use engine::*;
 pub use enrollment::*;
 pub use profile::*;
 pub use streams::*;

@@ -12,6 +12,9 @@ pub const PROFILE_ABI_VERSION: u16 = 3;
 /// Stable version for the offline client enrollment validation ABI.
 pub const ENROLLMENT_ABI_VERSION: u16 = 1;
 
+/// Stable version for additive multi-node engine control.
+pub const ENGINE_ABI_VERSION: u16 = 1;
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct VelumByteSlice {
@@ -35,6 +38,14 @@ pub struct VelumClientConfigInput {
     pub certificate_pem: VelumByteSlice,
     pub connect_timeout_millis: u64,
     pub trust_mode: u32,
+}
+
+/// One resolved node configuration copied by engine activation.
+#[repr(C)]
+pub struct VelumEngineNodeInput {
+    pub id: VelumByteSlice,
+    pub alias: VelumByteSlice,
+    pub configuration: VelumClientConfigInput,
 }
 
 pub const VELUM_TRUST_SYSTEM: u32 = 0;
@@ -152,6 +163,16 @@ impl From<RuntimeSnapshot> for VelumRuntimeSnapshotV1 {
     }
 }
 
+/// Fixed-width snapshot for one configured engine node.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct VelumEngineNodeSnapshotV1 {
+    pub profile_generation: u64,
+    pub configured: u32,
+    pub is_default: u32,
+    pub runtime: VelumRuntimeSnapshotV1,
+}
+
 #[cfg(test)]
 mod tests {
     use std::mem::{align_of, offset_of, size_of};
@@ -165,6 +186,15 @@ mod tests {
         assert_eq!(offset_of!(VelumRuntimeSnapshotV1, generation), 8);
         assert_eq!(offset_of!(VelumRuntimeSnapshotV1, phase), 16);
         assert_eq!(offset_of!(VelumRuntimeSnapshotV1, failure), 20);
+    }
+
+    #[test]
+    fn engine_node_snapshot_v1_has_the_documented_layout() {
+        assert_eq!(size_of::<VelumEngineNodeSnapshotV1>(), 40);
+        assert_eq!(offset_of!(VelumEngineNodeSnapshotV1, profile_generation), 0);
+        assert_eq!(offset_of!(VelumEngineNodeSnapshotV1, configured), 8);
+        assert_eq!(offset_of!(VelumEngineNodeSnapshotV1, is_default), 12);
+        assert_eq!(offset_of!(VelumEngineNodeSnapshotV1, runtime), 16);
     }
 
     #[test]

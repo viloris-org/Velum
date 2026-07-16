@@ -14,6 +14,7 @@ tokio = { version = "=1.52.3", features = ["macros", "rt-multi-thread", "sync", 
 velum-adapter-proxy = { version = "0.0.0", path = "../velum-adapter-proxy" }
 velum-adapter-tun = { version = "0.0.0", path = "../velum-adapter-tun" }
 velum-client-runtime = { version = "0.0.0", path = "../velum-client-runtime" }
+velum-client-engine = { version = "0.0.0", path = "../velum-client-engine" }
 velum-client-profile = { version = "0.0.0", path = "../velum-client-profile" }
 
 [dev-dependencies]

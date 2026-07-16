@@ -266,3 +266,5 @@ Uint8List _decodeHex(String value) {
 
 String _encodeHex(Uint8List value) =>
     value.map((byte) => byte.toRadixString(16).padLeft(2, '0')).join();
+
+Uint8List decodeCredentialHex(String value) => _decodeHex(value);

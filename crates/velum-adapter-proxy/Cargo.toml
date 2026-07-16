@@ -8,6 +8,7 @@ rust-version.workspace = true
 [dependencies]
 tokio = { version = "=1.52.3", features = ["io-util", "macros", "net", "rt", "sync"] }
 velum-client-routing = { version = "0.0.0", path = "../velum-client-routing" }
+velum-client-engine = { version = "0.0.0", path = "../velum-client-engine" }
 velum-client-runtime = { version = "0.0.0", path = "../velum-client-runtime" }
 
 [lints]
