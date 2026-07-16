@@ -106,3 +106,7 @@ Velum is experimental research software. It has not received a security audit
 and must not be relied on for production security, privacy, availability, or
 circumvention of network restrictions. Use it only where you are authorized to
 do so and accept all associated risks.
+
+## Stargazers Over Time
+
+[![Stargazers over time](https://starchart.cc/viloris-org/Velum.svg?variant=adaptive)](https://starchart.cc/viloris-org/Velum)

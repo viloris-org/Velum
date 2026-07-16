@@ -384,20 +384,4 @@ jobs:
           case "$GITHUB_REF_NAME" in
             *-*) release_args+=(--prerelease) ;;
           esac
-          cat > RELEASE_NOTES.md <<'EOF'
-          ## Highlights
-
-          - Adds offline client enrollment, including QR-code based profile import.
-          - Adds the managed Velum node runtime and its operational documentation.
-          - Completes the client traffic-routing foundation and connection overview.
-          - Adds platform proxy support and Android TUN integration.
-
-          ## Downloads
-
-          This release includes checksummed packages for supported Linux, macOS, Windows, and Android targets. Use the package matching your platform and verify it against `SHA256SUMS` before installation.
-
-          ## Pre-release status
-
-          This is a beta release. It does not establish a stable protocol, wire-compatibility, or support commitment.
-          EOF
-          gh release create "$GITHUB_REF_NAME" artifacts/*.tar.gz artifacts/*.apk artifacts/*.AppImage artifacts/*.deb artifacts/*.dmg artifacts/*.exe artifacts/*.rpm artifacts/*.sha256 artifacts/SHA256SUMS "${release_args[@]}" --repo "$GITHUB_REPOSITORY" --title "Velum $GITHUB_REF_NAME" --notes-file RELEASE_NOTES.md
+          gh release create "$GITHUB_REF_NAME" artifacts/*.tar.gz artifacts/*.apk artifacts/*.AppImage artifacts/*.deb artifacts/*.dmg artifacts/*.exe artifacts/*.rpm artifacts/*.sha256 artifacts/SHA256SUMS "${release_args[@]}" --generate-notes --repo "$GITHUB_REPOSITORY" --title "Velum $GITHUB_REF_NAME"
